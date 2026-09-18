@@ -1,0 +1,12 @@
+# Line endings. `text=auto` stores LF in the repository and gives each platform its
+# native form in the working copy. Without it, contributors on different platforms
+# produce whole-file diffs against each other on files neither of them changed, which
+# defeats the file-overlap check in docs/development/starting-new-work.md section 2.
+* text=auto
+
+# Shell scripts fail with "bad interpreter: /usr/bin/env bash^M" under CRLF.
+*.sh  text eol=lf
+*.example text eol=lf
+
+# PowerShell is CRLF-native on the platform it runs on.
+*.ps1 text eol=crlf

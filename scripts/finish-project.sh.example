@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# Project scans for scripts/finish.sh. Rename this file to finish-project.sh to
+# activate it; finish.sh sources it if it exists and ignores it otherwise.
+#
+# THE CONTRACT
+#   Define one function, project_scans. finish.sh calls it once, on the bare run
+#   and on the --pr run, after its own scans, with the working directory at the
+#   repository root and these available:
+#
+#     $BASE                     the branch this work merges into (without origin/)
+#     finding <class> <text>    a line in the report. Never blocks anything
+#     add_flagged <path>        puts a changed path behind the --acknowledge gate
+#     add_note <text>           a line for the Notes: field of the pull request body
+#     is_declared <name>        true when the run was given --declare <name>. Call it
+#                               only where the stop would otherwise fire: a name that
+#                               no scan asked about is a usage error, so --declare
+#                               cannot pre-authorise anything
+#     stop <reason> [line...]   ends the run. Nothing is attempted after it
+#     q <command...>            a read-only command; never gated by --dry-run
+#
+#   Paired with finish-project.ps1, which must behave identically.
+#
+# WHAT A PROJECT SCAN MAY NOT DO
+#   Add an override flag. Permission systems match on command prefixes, so the
+#   moment "finish.sh --merge" is approved, "finish.sh --merge --force" is approved
+#   too. The only way past a stop is to fix the branch, or to make a declaration
+#   that is written into the pull request body where a reviewer sees it.
+#
+#   Run the project's tests or mutate anything. Section 2 of finishing-work.md is a
+#   human judgement; a scan gathers evidence for it.
+#
+# THE ILLUSTRATION BELOW
+#   Frozen data under data/frozen/ is single-writer: a change there is a decision,
+#   not housekeeping. The scan stops on any change under that tree unless the run
+#   declares it with --declare frozen-data, which records the declaration in the
+#   pull request body.
+
+project_scans() {
+  local changed
+  changed=$(q git diff --name-only "origin/$BASE...HEAD" -- 'data/frozen/*' || true)
+  [ -n "$changed" ] || return 0
+
+  if is_declared frozen-data; then
+    finding 'frozen data' 'changed, declared intended with --declare frozen-data'
+    add_note 'Frozen data under data/frozen/ changed; declared intended.'
+    return 0
+  fi
+
+  stop \
+    'this branch changes frozen data' \
+    'files under data/frozen/ are single-writer: a change there is a decision, not' \
+    'housekeeping.' \
+    '' \
+    "$(printf '%s\n' "$changed" | sed 's/^/  /')" \
+    '' \
+    'If the change was intended, say so and it goes into the pull request body:' \
+    '  ./scripts/finish.sh --pr --declare frozen-data --testing "..."' \
+    '' \
+    'If it was not intended, find out what changed it before going further'
+}

@@ -1,0 +1,56 @@
+# Project scans for scripts/finish.ps1. Rename this file to finish-project.ps1 to
+# activate it; finish.ps1 dot-sources it if it exists and ignores it otherwise.
+#
+# THE CONTRACT
+#   Define one function, Invoke-ProjectScans. finish.ps1 calls it once, on the bare
+#   run and on the -Pr run, after its own scans, with the working directory at the
+#   repository root and these available:
+#
+#     $script:BaseName            the branch this work merges into (without origin/)
+#     Add-Finding <class> <text>  a line in the report. Never blocks anything
+#     Add-Flagged <path>          puts a changed path behind the -Acknowledge gate
+#     Add-Note <text>             a line for the Notes: field of the pull request body
+#     Test-Declared <name>        true when the run was given -Declare <name>. Call it
+#                                 only where the stop would otherwise fire: a name that
+#                                 no scan asked about is a usage error, so -Declare
+#                                 cannot pre-authorise anything
+#     Stop-Now <reason> @(lines)  ends the run. Nothing is attempted after it
+#
+#   Paired with finish-project.sh, which must behave identically.
+#
+# WHAT A PROJECT SCAN MAY NOT DO
+#   Add an override flag. Permission systems match on command prefixes, so the
+#   moment "finish.ps1 -Merge" is approved, "finish.ps1 -Merge -Force" is approved
+#   too. The only way past a stop is to fix the branch, or to make a declaration
+#   that is written into the pull request body where a reviewer sees it.
+#
+#   Run the project's tests or mutate anything. Section 2 of finishing-work.md is a
+#   human judgement; a scan gathers evidence for it.
+#
+# THE ILLUSTRATION BELOW
+#   Frozen data under data/frozen/ is single-writer: a change there is a decision,
+#   not housekeeping. The scan stops on any change under that tree unless the run
+#   declares it with -Declare frozen-data, which records the declaration in the
+#   pull request body.
+
+function Invoke-ProjectScans {
+    $changed = @(git diff --name-only "origin/$($script:BaseName)...HEAD" -- 'data/frozen/*')
+    if ($changed.Count -eq 0) { return }
+
+    if (Test-Declared 'frozen-data') {
+        Add-Finding 'frozen data' 'changed, declared intended with -Declare frozen-data'
+        Add-Note 'Frozen data under data/frozen/ changed; declared intended.'
+        return
+    }
+
+    Stop-Now 'this branch changes frozen data' @(
+        'files under data/frozen/ are single-writer: a change there is a decision, not',
+        'housekeeping.',
+        '',
+        (($changed | ForEach-Object { "  $_" }) -join "`n"),
+        '',
+        'If the change was intended, say so and it goes into the pull request body:',
+        '  .\scripts\finish.ps1 -Pr -Declare frozen-data -Testing "..."',
+        '',
+        'If it was not intended, find out what changed it before going further')
+}
