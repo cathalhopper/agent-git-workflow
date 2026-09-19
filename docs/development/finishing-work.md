@@ -111,7 +111,7 @@ Do not open a PR you already know is red.
 | `lockfile` | the file names in `LOCKFILES` | `--acknowledge` |
 | `repo-governing` | the patterns in `GOVERNING_PATHS` | `--acknowledge` |
 | `binary file` | an added file `.gitattributes` marks `binary` | `--acknowledge` |
-| `debug scaffolding` | an added line matching the built-in leftover pattern or `SCAFFOLDING_PATTERN` | none — a finding only |
+| `debug scaffolding` | an added line matching the built-in leftover pattern or `SCAFFOLDING_PATTERN`, outside the shipped `scripts/finish.*`, `setup.*` and `env-capabilities.*` | none — a finding only |
 | `large diff` | more changed lines than `LARGE_DIFF_LINES` | none — a finding only |
 | a credential in an added line | tokens, private keys, a password assigned a value | **a stop, with no flag.** Change the line |
 

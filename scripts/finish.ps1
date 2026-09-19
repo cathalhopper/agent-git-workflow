@@ -1093,7 +1093,10 @@ function Invoke-ScaffoldingScan {
     $re += '|dbg!\(|println!\(|eprintln!\(|todo!\(|unimplemented!\(|#\[ignore\]'
     $re += '|breakpoint\(\)|pdb\.set_trace|binding\.pry|byebug'
     if ($script:ScaffoldingPattern) { $re += '|' + $script:ScaffoldingPattern }
-    $hits = @(Get-AddedLines | Where-Object { $_.Content -cmatch $re } |
+    # The shipped scripts quote these patterns in their own text, so adopting or updating
+    # them would otherwise report the workflow's own files as leftovers.
+    $shipped = '^scripts/((finish|setup|env-capabilities)\.(sh|ps1)|finish-project\.(sh|ps1)\.example)$'
+    $hits = @(Get-AddedLines | Where-Object { $_.Path -notmatch $shipped -and $_.Content -cmatch $re } |
               ForEach-Object { "$($_.Path):$($_.Line)" } | Select-Object -Unique)
     if ($hits.Count -gt 0) {
         Add-Finding 'debug scaffolding' "$($hits.Count) added line(s) look like leftovers:"

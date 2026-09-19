@@ -25,10 +25,19 @@ An agent adopting this asks the user each question below and waits for the answe
 From the root of your repository, list every shipped file that already exists here:
 
 ```bash
-(cd <path-to-agent-git-workflow> && find docs/development scripts -type f) | while read -r f; do [ -e "$f" ] && echo "$f"; done
+(cd <path-to-agent-git-workflow> && find docs/development scripts -type f) | while read -r f; do [ -e "$f" ] && echo "$f"; done; true
+for f in AGENTS.md CLAUDE.md CONTRIBUTING.md .gitattributes .github/workflows; do [ -e "$f" ] && echo "$f"; done; true
 ```
 
-The copy overwrites each file it prints. Stop and ask the user whether to merge the two or rename theirs. The documents cite `scripts/setup.*` and `docs/development/README.md` by path, so rename the project's file, never the shipped one.
+```powershell
+$src = (Resolve-Path '<path-to-agent-git-workflow>').Path
+Get-ChildItem -Recurse -File "$src\docs\development", "$src\scripts" | ForEach-Object { $_.FullName.Substring($src.Length + 1) } | Where-Object { Test-Path $_ }
+'AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md', '.gitattributes', '.github\workflows' | Where-Object { Test-Path $_ }
+```
+
+Printing nothing is the clean result. The first list is what the copy overwrites; the second is what §5, §6 and §9 merge into rather than replace.
+
+The copy overwrites each file the first list prints. Stop and ask the user whether to merge the two or rename theirs. The documents cite `scripts/setup.*` and `docs/development/README.md` by path, so rename the project's file, never the shipped one.
 
 Then copy:
 
@@ -55,6 +64,8 @@ git add scripts/finish.sh scripts/setup.sh scripts/env-capabilities.sh
 git update-index --chmod=+x scripts/finish.sh scripts/setup.sh scripts/env-capabilities.sh
 ```
 
+Do the same for `scripts/check.sh` when §3 writes it: CI runs it.
+
 ## 3. Fill in `scripts/workflow.conf`
 
 Every key has a default, so start with the ones that are wrong for you.
@@ -69,7 +80,7 @@ Every key has a default, so start with the ones that are wrong for you.
 | `CHECK_COMMAND`, `CHECK_COMMAND_WINDOWS` | Your one local check command is not `scripts/check.*`. None ships with this set: write it, or name yours here |
 | `LOCKFILES` | Your ecosystem's lockfile is not in the list |
 | `GOVERNING_PATHS` | A file changes the rules for everyone, such as a pinned toolchain file. Narrow `scripts/*` to the shipped scripts if the project keeps others there |
-| `SCAFFOLDING_PATTERN` | Your language has a debug leftover the built-in pattern misses |
+| `SCAFFOLDING_PATTERN` | Your language has a debug leftover the built-in pattern misses, such as `print\(` in Python or `fmt\.Println` in Go |
 | `LARGE_DIFF_LINES` | 2000 changed lines is the wrong threshold for a finding |
 
 With `DEFAULT_BASE=develop`, the adoption lands on `develop`, and `scripts/finish.*` reaches `main` only with the next release. A `hotfix/` branch cut from `main` before that has no scripts: release first.
@@ -95,7 +106,9 @@ Claude Code reads `CLAUDE.md`. Point it at the same file with one line, added to
 @AGENTS.md
 ```
 
-`docs/development/README.md` §1 routes code and document changes to conventions documents your project writes to its §3. Write them, moving in the conventions an existing `AGENTS.md` or `CONTRIBUTING.md` holds, or delete those two rows until they exist.
+`docs/development/README.md` §1 routes code and document changes to conventions documents your project writes to its §3. Write them, moving in the conventions an existing `AGENTS.md` or `CONTRIBUTING.md` holds, or delete those two rows until they exist, together with the "Before changing code or documents" section of `AGENTS.md` that points at them.
+
+Where an existing `CONTRIBUTING.md` or `AGENTS.md` states a rule these documents contradict, such as "rebase and merge", ask the user which stands. Replace the losing rule with a pointer to the document that holds the winning one; never leave both.
 
 ## 6. Mark files that must not merge
 
@@ -133,6 +146,8 @@ Write both files, or neither. The two shells must behave identically.
 On a throwaway branch cut from a base that carries the scripts, from the primary checkout. Replace `main` with your base branch. An adoption that lands through a pull request rehearses on its own branch instead, per §10:
 
 ```bash
+./scripts/setup.sh                 # .\scripts\setup.ps1 on Windows
+./scripts/env-capabilities.sh      # what this session can do: gh, and whether origin is on GitHub
 git switch -c chore/rehearse-finish origin/main
 git commit --allow-empty -m "claim: rehearse the finish script" -m "Scope: Rehearsal only." -m "Touches: nothing" -m "Split: No"
 ./scripts/finish.sh
@@ -166,6 +181,8 @@ jobs:
 ```
 
 Pin the action by commit SHA rather than tag once you have chosen a version.
+
+Without CI, nothing enforces the check command: `scripts/finish.*` quotes it and never runs it, and `--merge` finds no checks to refuse on. The `Testing` line is then the only record that it ran.
 
 ## 10. Land the adoption
 

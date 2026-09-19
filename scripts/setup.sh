@@ -169,8 +169,10 @@ fi
 
 section 'Steps this script will not do for you'
 
-GIT_NAME=$(git config --global --get user.name || true)
-GIT_EMAIL=$(git config --global --get user.email || true)
+# The identity git uses here - a repository setting over the global one - which is the
+# one scripts/finish.* compares with the claim commit author.
+GIT_NAME=$(git config --get user.name || true)
+GIT_EMAIL=$(git config --get user.email || true)
 
 if [ -z "$GIT_NAME" ] || [ -z "$GIT_EMAIL" ]; then
   printf '  %sYour git identity is not fully set.%s\n' "$YELLOW" "$RESET"

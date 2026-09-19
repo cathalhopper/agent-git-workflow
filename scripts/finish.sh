@@ -1054,7 +1054,11 @@ scan_scaffolding() {
   re="$re"'|dbg!\(|println!\(|eprintln!\(|todo!\(|unimplemented!\(|#\[ignore\]'
   re="$re"'|breakpoint\(\)|pdb\.set_trace|binding\.pry|byebug'
   [ -n "$SCAFFOLDING_PATTERN" ] && re="$re|$SCAFFOLDING_PATTERN"
-  hits=$(added_lines | grep -E "$re" | cut -f1 | sort -u || true)
+  # The shipped scripts quote these patterns in their own text, so adopting or updating
+  # them would otherwise report the workflow's own files as leftovers.
+  hits=$(added_lines \
+    | grep -vE '^scripts/((finish|setup|env-capabilities)\.(sh|ps1)|finish-project\.(sh|ps1)\.example):' \
+    | grep -E "$re" | cut -f1 | sort -u || true)
   if [ -n "$hits" ]; then
     local n
     n=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')

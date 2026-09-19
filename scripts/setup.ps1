@@ -142,8 +142,10 @@ Write-Head 'Steps this script will not do for you'
 
 $actions = @()
 
-$gitName  = git config --global --get user.name
-$gitEmail = git config --global --get user.email
+# The identity git uses here - a repository setting over the global one - which is the
+# one scripts/finish.* compares with the claim commit author.
+$gitName  = git config --get user.name
+$gitEmail = git config --get user.email
 
 if ([string]::IsNullOrWhiteSpace($gitName) -or [string]::IsNullOrWhiteSpace($gitEmail)) {
     Write-Host '  Your git identity is not fully set.' -ForegroundColor Yellow
