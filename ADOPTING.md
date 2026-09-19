@@ -4,9 +4,33 @@ After reading this you can install the workflow into your own repository, fit it
 
 Every step is something you do once. Nothing here edits the shipped scripts or procedures: your project's shape goes into one settings file and, optionally, one hook script per shell.
 
+## 0. Ask before copying anything
+
+The workflow needs a GitHub `origin` and `gh`. Without `gh`, only the bare run of `scripts/finish.*` works.
+
+An agent adopting this asks the user each question below and waits for the answers. On a new repository most answers are "none yet", and the default stands.
+
+| Ask | It decides |
+|---|---|
+| Which branch does work land on? Does another long-lived branch take merges, such as `release` or `hotfix`? | `DEFAULT_BASE` and `ALT_BASES`, §3 |
+| Do the project's branch prefixes, ticket IDs and pull-request title format stay? | `BRANCH_TYPES`, §3, and whether titles need `--title` |
+| This workflow never rebases and always squash-merges. Does that replace the project's rule, and does everyone who works here agree? | Whether to adopt. The repository settings must allow squash merging |
+| What one command runs every local check? Does CI run it on pull requests to every base? | `CHECK_COMMAND`, §3 and §9 |
+| Which shipped files already exist here, and what happens to each? | §1 |
+| Do the existing `AGENTS.md`, `CLAUDE.md` and `CONTRIBUTING.md` merge with the template, or stay as they are? | §5 |
+| Does the adoption land as a direct commit, or through a pull request? | §10 |
+
 ## 1. Copy two directories
 
-From the root of your repository:
+From the root of your repository, list every shipped file that already exists here:
+
+```bash
+(cd <path-to-agent-git-workflow> && find docs/development scripts -type f) | while read -r f; do [ -e "$f" ] && echo "$f"; done
+```
+
+The copy overwrites each file it prints. Stop and ask the user whether to merge the two or rename theirs. The documents cite `scripts/setup.*` and `docs/development/README.md` by path, so rename the project's file, never the shipped one.
+
+Then copy:
 
 ```bash
 mkdir -p docs/development scripts
@@ -21,8 +45,6 @@ Copy-Item -Recurse <path-to-agent-git-workflow>\scripts\* scripts\
 ```
 
 The paths are fixed. The scripts cite `docs/development/finishing-work.md` by path in their stop messages, so keep the documents where they land.
-
-If your repository already has a `scripts/check.sh` or a `docs/development/README.md`, read both before copying over them.
 
 ## 2. Set the executable bit on the shell scripts
 
@@ -41,15 +63,15 @@ Every key has a default, so start with the ones that are wrong for you.
 |---|---|
 | `PROJECT_NAME` | Always. It is the banner text |
 | `DEFAULT_BASE` | Your base branch is not `origin/HEAD` |
-| `ALT_BASES` | Some work lands on a long-lived branch other than the default, such as a prototype branch |
+| `ALT_BASES` | Some work lands on a long-lived branch other than the default, such as a prototype branch. Never name a branch the default merges from, such as a `master` that `develop` contains: every branch off the default would resolve to it |
 | `BRANCH_TYPES` | Your branch prefixes are not `feat`, `fix`, `spike`, `docs`, `chore` |
 | `CHECK_COMMAND`, `CHECK_COMMAND_WINDOWS` | Your one local check command is not `scripts/check.*`. None ships with this set: write it, or name yours here |
 | `LOCKFILES` | Your ecosystem's lockfile is not in the list |
-| `GOVERNING_PATHS` | A file changes the rules for everyone, such as a pinned toolchain file |
+| `GOVERNING_PATHS` | A file changes the rules for everyone, such as a pinned toolchain file. Narrow `scripts/*` to the shipped scripts if the project keeps others there |
 | `SCAFFOLDING_PATTERN` | Your language has a debug leftover the built-in pattern misses |
 | `LARGE_DIFF_LINES` | 2000 changed lines is the wrong threshold for a finding |
 
-`starting-new-work.md` quotes 14 days as the dormant-branch threshold. Change the number there if yours differs.
+`starting-new-work.md` quotes 14 days as the dormant-branch threshold, under "Dormant branches" and in §3. Change both if yours differs.
 
 ## 4. Fill in the two slots in `setting-up.md`
 
@@ -62,11 +84,15 @@ Each slot carries an `ADOPTER` comment. Delete the comment once the slot is fill
 
 Copy `templates/AGENTS.md` to the root of your repository and write its two closing sections. Most coding agents read `AGENTS.md` at the root.
 
-Claude Code reads `CLAUDE.md`. Point it at the same file with one line:
+If the repository has an `AGENTS.md`, merge instead of copying: add the template's sections to it, and where one of its rules contradicts one of the template's, ask the user which stands.
+
+Claude Code reads `CLAUDE.md`. Point it at the same file with one line, added to any `CLAUDE.md` that exists:
 
 ```markdown
 @AGENTS.md
 ```
+
+`docs/development/README.md` §1 routes code and document changes to conventions documents your project writes to its §3. Write them, moving in the conventions an existing `AGENTS.md` or `CONTRIBUTING.md` holds, or delete those two rows until they exist.
 
 ## 6. Mark files that must not merge
 
@@ -101,7 +127,7 @@ Write both files, or neither. The two shells must behave identically.
 
 ## 8. Rehearse before anyone relies on it
 
-On a throwaway branch, from the primary checkout. Replace `main` with your base branch:
+On a throwaway branch cut from a base that carries the scripts, from the primary checkout. Replace `main` with your base branch. An adoption that lands through a pull request rehearses on its own branch instead, per §10:
 
 ```bash
 git switch -c chore/rehearse-finish origin/main
@@ -137,6 +163,11 @@ jobs:
 ```
 
 Pin the action by commit SHA rather than tag once you have chosen a version.
+
+## 10. Land the adoption
+
+- **A new repository with no other contributors:** commit it straight to the base branch, then rehearse per §8.
+- **Otherwise:** land it the way it tells everyone else to. Claim a `chore/` branch per `starting-new-work.md`, commit the adoption on it, and finish it with `scripts/finish.*`. The diff adds governing paths, so the bare run lists them for `--acknowledge`.
 
 ## Keeping it in step
 

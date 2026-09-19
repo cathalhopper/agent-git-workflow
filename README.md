@@ -50,14 +50,7 @@ It needs git, an `origin` remote, and an authenticated `gh` for the pull-request
 
 ## Adopting it
 
-1. Copy `docs/development/` and `scripts/` into your repository.
-2. Set the executable bit on `scripts/*.sh`.
-3. Edit `scripts/workflow.conf`.
-4. Fill the two slots in `setting-up.md`.
-5. Copy `templates/AGENTS.md` to your repository root.
-6. Rehearse the finish script on a throwaway branch.
-
-[`ADOPTING.md`](ADOPTING.md) has each step with its commands, and how to add your own stops.
+[`ADOPTING.md`](ADOPTING.md) has each step with its commands, the questions to ask before copying anything, and how to add your own stops.
 
 ## What it does not cover
 

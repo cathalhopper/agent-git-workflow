@@ -1,4 +1,4 @@
-<!-- ADOPTER: copy this file to the root of your repository as AGENTS.md. Replace <Project name> and write the two sections at the end. -->
+<!-- ADOPTER: copy this file to the root of your repository as AGENTS.md. Replace <Project name>, replace `main` if your base branch differs, and write the two sections at the end. -->
 
 # <Project name>
 
