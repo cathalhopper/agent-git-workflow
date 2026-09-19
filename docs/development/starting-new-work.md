@@ -1,14 +1,8 @@
 # Starting New Work
 
-**Scope:** From "I want to build X" to "the branch is claimed and pushed". Ends before the first line of feature code.
-**Audience:** Every contributor, and every coding agent acting on their behalf.
-**Companion documents:** [`README.md`](README.md) — the charter · [`setting-up.md`](setting-up.md) — the tools this document assumes · [`finishing-work.md`](finishing-work.md) — how it lands
-
----
-
 ## 0. What you can do after reading this
 
-**After reading this you can say whether the work you want to do is already on somebody's branch, and claim it so that the next person's check finds you.** The branch list is the registry: there is no board and no tooling to maintain.
+**You can say whether the work you want to do is already on somebody's branch, and claim it so that the next person's check finds you.** The branch list is the registry: there is no board and no tooling to maintain. Stop before the first line of feature code; [`finishing-work.md`](finishing-work.md) takes over after the last. [`README.md`](README.md) §1 routes to the other development documents.
 
 ---
 

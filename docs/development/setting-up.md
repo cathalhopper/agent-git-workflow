@@ -1,14 +1,8 @@
 # Setting Up
 
-**Scope:** From a machine with nothing installed to a clone that can claim, build and land work. Read once on arrival, and again only when something is missing.
-**Audience:** Every contributor, and every coding agent acting on their behalf.
-**Companion documents:** [`README.md`](README.md) — the charter · [`starting-new-work.md`](starting-new-work.md) — the first document that assumes the tools below · [`finishing-work.md`](finishing-work.md) — the one that cannot run without `gh`
-
----
-
 ## 0. What you can do after reading this
 
-**After reading this you can claim and land work from a machine that had nothing installed, and you know where the project's own build toolchain is described.**
+**You can claim and land work from a machine that had nothing installed, and you know where the project's own build toolchain is described.** Read it once on arrival, and again only when something is missing. [`README.md`](README.md) §1 routes to the other development documents.
 
 ---
 

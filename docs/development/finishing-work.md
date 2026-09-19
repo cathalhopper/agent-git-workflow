@@ -1,14 +1,8 @@
 # Finishing Work
 
-**Scope:** From "the feature works" to "it is on `main` and the branch is gone". Begins after the last line of feature code.
-**Audience:** Every contributor, and every coding agent acting on their behalf.
-**Companion documents:** [`README.md`](README.md) — the charter · [`starting-new-work.md`](starting-new-work.md) — how the work is claimed · [`setting-up.md`](setting-up.md) — the tools this assumes
-
----
-
 ## 0. What you can do after reading this
 
-**After reading this you can take a finished branch onto `main` as one squashed commit without destroying it on the way, and stop at every point where the next command would.**
+**You can take a finished branch onto `main` as one squashed commit without destroying it on the way, and stop at every point where the next command would.** Start after the last line of feature code. [`README.md`](README.md) §1 routes to the other development documents.
 
 Where this document says `main`, read the base branch `scripts/finish.*` resolves: `DEFAULT_BASE` in `scripts/workflow.conf`, or an alternate base per [`starting-new-work.md`](starting-new-work.md) §4.3.
 
