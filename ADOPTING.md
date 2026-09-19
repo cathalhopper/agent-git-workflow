@@ -12,7 +12,7 @@ An agent adopting this asks the user each question below and waits for the answe
 
 | Ask | It decides |
 |---|---|
-| Which branch does work land on? Does another long-lived branch take merges, such as `release` or `hotfix`? | `DEFAULT_BASE` and `ALT_BASES`, §3 |
+| Which branch does work land on? Does another long-lived branch take merges, such as `release` or `hotfix`? Is `main` a release branch that work reaches through `develop`? | `DEFAULT_BASE`, `ALT_BASES` and `BASE_BY_PREFIX`, §3 |
 | Do the project's branch prefixes, ticket IDs and pull-request title format stay? | `BRANCH_TYPES`, §3, and whether titles need `--title` |
 | This workflow never rebases and always squash-merges. Does that replace the project's rule, and does everyone who works here agree? | Whether to adopt. The repository settings must allow squash merging |
 | What one command runs every local check? Does CI run it on pull requests to every base? | `CHECK_COMMAND`, §3 and §9 |
@@ -63,13 +63,16 @@ Every key has a default, so start with the ones that are wrong for you.
 |---|---|
 | `PROJECT_NAME` | Always. It is the banner text |
 | `DEFAULT_BASE` | Your base branch is not `origin/HEAD` |
-| `ALT_BASES` | Some work lands on a long-lived branch other than the default, such as a prototype branch. Never name a branch the default merges from, such as a `master` that `develop` contains: every branch off the default would resolve to it |
+| `ALT_BASES` | Some work lands on a long-lived branch other than the default, such as a prototype branch. A branch the default contains, such as a `main` that `develop` merges from, is ignored here with a note: use `BASE_BY_PREFIX` for it |
+| `BASE_BY_PREFIX` | A branch prefix always lands on one base, such as `hotfix:main` when work lands on `develop` and `main` is released from it. Comma-separated `prefix:base` pairs; each prefix also counts as a branch type. [`finishing-work.md`](docs/development/finishing-work.md) §5 has the release and back-merge that go with it |
 | `BRANCH_TYPES` | Your branch prefixes are not `feat`, `fix`, `spike`, `docs`, `chore` |
 | `CHECK_COMMAND`, `CHECK_COMMAND_WINDOWS` | Your one local check command is not `scripts/check.*`. None ships with this set: write it, or name yours here |
 | `LOCKFILES` | Your ecosystem's lockfile is not in the list |
 | `GOVERNING_PATHS` | A file changes the rules for everyone, such as a pinned toolchain file. Narrow `scripts/*` to the shipped scripts if the project keeps others there |
 | `SCAFFOLDING_PATTERN` | Your language has a debug leftover the built-in pattern misses |
 | `LARGE_DIFF_LINES` | 2000 changed lines is the wrong threshold for a finding |
+
+With `DEFAULT_BASE=develop`, the adoption lands on `develop`, and `scripts/finish.*` reaches `main` only with the next release. A `hotfix/` branch cut from `main` before that has no scripts: release first.
 
 `starting-new-work.md` quotes 14 days as the dormant-branch threshold, under "Dormant branches" and in §3. Change both if yours differs.
 

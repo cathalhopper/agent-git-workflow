@@ -203,6 +203,24 @@ Set the squash commit message deliberately: title `<type>: <outcome>` matching t
 | The PR is not yours | **Stop.** Never merge or close a PR you did not open |
 | It is urgent and pushing straight to `main` would be faster | **Stop.** There is no situation in this document where that is the answer |
 
+### Release and back-merge, when `main` is released from `develop`
+
+Where `BASE_BY_PREFIX` maps a hotfix prefix to `main` ([`starting-new-work.md`](starting-new-work.md) §4.3), two merges move work between the long-lived branches. `scripts/finish.*` performs neither: it refuses to run on a base branch. A maintainer the user names performs them, each through a pull request, **with a merge commit, never a squash**.
+
+1. **Release.** Open `develop` into `main`, and merge it once its checks pass:
+
+   ```bash
+   gh pr create --base main --head develop --title "release: <version or date>" --body "<what is in it>"
+   gh pr merge <number> --merge
+   ```
+
+2. **Back-merge, after every hotfix lands on `main`.** Open `main` into `develop` the same way, with `--head main --base develop`, and merge it with `--merge`.
+
+| Situation | What happens |
+|---|---|
+| The release or back-merge pull request has conflicts | **Stop.** Report the files and wait for the maintainer. Never resolve them on `main` or `develop` directly |
+| Anyone proposes squashing a release or a back-merge | **Stop.** Merge commits only |
+
 ---
 
 ## 6. Clean up locally
@@ -290,6 +308,8 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 | `there is no pull request for this branch` | `--merge` ran before `--pr` opened one | Run `--pr` first |
 | `gh could not read the pull request for this branch` | `gh` failed for a reason it names, such as `origin` not being a GitHub host | Act on what gh said. Where no GitHub route exists, land the branch through the remote's own review and run `--cleanup --sha <commit>` |
 | `this stage needs a route to GitHub, and there is none` | No usable `gh`: a cloud session, or `origin` not on a host `gh` is logged in to | Follow the route the stop prints |
+| `this branch was cut from origin/<a>, but resolves to origin/<b>` | The branch carries commits of one long-lived branch that its resolved base lacks: a hotfix cut from `develop`, or a feature cut from `main` | If it belongs on `<a>`, re-run with `--base <a>`. If it belongs on `<b>`, it was cut from the wrong branch: report it and wait |
+| `note  ALT_BASES lists <branch>, which origin/<default> contains` (a note, not a stop) | `ALT_BASES` names a branch the default merges from, so no branch can be told apart by it | Move it to `BASE_BY_PREFIX` in `scripts/workflow.conf` |
 | `worktree not removed - it is locked` (after the merge) | Another tool owns that worktree's lifecycle, such as an agent session | Leave it through that tool. Otherwise `git worktree unlock <path>` from the primary checkout first. The script does not unlock it for you |
 
 ---
@@ -320,5 +340,5 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 - **Release, tagging and versioning** — no document in this set owns these
 - **CI configuration** — what the checks *are* is your workflow files and the check command; this document holds only the rule that they are green
 - **Commit message conventions beyond the PR title and the claim commit**
-- **Long-lived branches** other than `main` and the alternate bases in `scripts/workflow.conf`
-- **Hotfix procedure** — a hotfix is a `fix/` branch through this same procedure
+- **Long-lived branches** other than the default, the alternate bases and the `BASE_BY_PREFIX` bases in `scripts/workflow.conf`
+- **Hotfix procedure** beyond its base — a hotfix is a branch through this same procedure, landing on `main` where `BASE_BY_PREFIX` maps its prefix there (§5)

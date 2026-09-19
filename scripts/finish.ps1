@@ -21,7 +21,8 @@
 
     WHAT THE PROJECT SUPPLIES
     scripts\workflow.conf       KEY=value settings: the base branches, the branch-name
-                                prefixes, the check command quoted in messages, and the
+                                prefixes and any base a prefix maps to, the check
+                                command quoted in messages, and the
                                 path classes flagged for -Acknowledge. Every key has a
                                 default, so a missing file changes nothing.
     scripts\finish-project.ps1  optional. Dot-sourced if present; defines
@@ -405,6 +406,8 @@ $script:WtLocked    = ''
 $script:BranchName  = ''
 $script:BaseName    = ''
 $script:BaseWhy     = ''
+$script:ResolvedDefault = ''
+$script:BaseNotes   = @()   # printed by preflight under the base line
 
 function Get-RepoContext {
     Invoke-Quiet { git rev-parse --git-dir *> $null }
@@ -496,10 +499,27 @@ function Resolve-Base {
         $default = (git symbolic-ref -q --short refs/remotes/origin/HEAD) | Select-Object -First 1
         if ($LASTEXITCODE -ne 0 -or -not $default) { $default = 'main' } else { $default = $default -replace '^origin/', '' }
     }
+    $script:ResolvedDefault = $default
+
+    # A prefix BASE_BY_PREFIX maps names its base outright - a hotfix/ branch that lands on
+    # main while everything else lands on develop. Nothing in the history can say that as
+    # reliably as the name the branch was given when it was claimed.
+    foreach ($m in (Get-BaseMappings)) {
+        if ($script:BranchName.StartsWith("$($m.Prefix)/")) {
+            if (-not (Test-RemoteRef $m.Base)) {
+                Stop-Now "origin/$($m.Base) does not exist" @(
+                    "BASE_BY_PREFIX in scripts/workflow.conf maps $($m.Prefix)/ branches to it")
+            }
+            $script:BaseName = $m.Base
+            $script:BaseWhy  = "the $($m.Prefix)/ prefix maps to $($m.Base) in workflow.conf"
+            return
+        }
+    }
 
     # Every alternate base that exists on the remote and has diverged from the default is
     # a candidate. One that has not diverged is indistinguishable from the default, and
-    # the default is the safe reading.
+    # the default is the safe reading. So is one the default contains, such as a main that
+    # develop merges from: every branch off the default contains it too.
     $defaultSha = ''
     if (Test-RemoteRef $default) { $defaultSha = (git rev-parse "refs/remotes/origin/$default") | Select-Object -First 1 }
 
@@ -512,6 +532,13 @@ function Resolve-Base {
         if (-not (Test-RemoteRef $alt)) { continue }
         $altSha = (git rev-parse "refs/remotes/origin/$alt") | Select-Object -First 1
         if ($altSha -eq $defaultSha) { continue }
+        if ($defaultSha) {
+            Invoke-Quiet { git merge-base --is-ancestor $altSha $defaultSha *> $null }
+            if ($LASTEXITCODE -eq 0) {
+                $script:BaseNotes += "ALT_BASES lists $alt, which origin/$default contains, so it is ignored: name its branches with BASE_BY_PREFIX"
+                continue
+            }
+        }
         $candidates += $alt
     }
 
@@ -575,8 +602,41 @@ function Test-BaseBranch {
     param([string]$Name)
     if ($Name -in @('main', 'master', $script:BaseName)) { return $true }
     if ($script:DefaultBase -and $Name -eq $script:DefaultBase) { return $true }
-    if ((Get-ConfigItems $script:AltBases) -contains $Name) { return $true }
+    if ((Get-LongLivedBranches) -contains $Name) { return $true }
     return $false
+}
+
+# Every branch this repository treats as long-lived: the default, main and master, the
+# alternate bases and the bases BASE_BY_PREFIX maps to.
+function Get-LongLivedBranches {
+    $all = @($script:ResolvedDefault, 'main', 'master') + @(Get-ConfigItems $script:AltBases) +
+        @(Get-BaseMappings | ForEach-Object { $_.Base })
+    return @($all | Where-Object { $_ } | Select-Object -Unique)
+}
+
+# A branch cut from one long-lived branch but resolving to another would have the wrong
+# base merged into it by section 3, and its pull request would land it on the wrong
+# branch. The sign is a fork point with another long-lived branch that the resolved base
+# does not contain: the branch carries commits of that branch which are not on the base.
+function Test-CutFrom {
+    if ($script:BaseWhy -eq 'given with -Base') { return }
+    foreach ($other in (Get-LongLivedBranches)) {
+        if ($other -eq $script:BaseName) { continue }
+        if (-not (Test-RemoteRef $other)) { continue }
+        $fork = (Invoke-Quiet { git merge-base HEAD "refs/remotes/origin/$other" 2>$null }) | Select-Object -First 1
+        if ($LASTEXITCODE -ne 0 -or -not $fork) { continue }
+        Invoke-Quiet { git merge-base --is-ancestor $fork "refs/remotes/origin/$($script:BaseName)" *> $null }
+        if ($LASTEXITCODE -eq 0) { continue }
+        $b = $script:BaseName
+        Stop-Now "this branch was cut from origin/$other, but resolves to origin/$b" @(
+            "origin/$b is the base here ($($script:BaseWhy)), but the branch",
+            "carries commits of origin/$other that origin/$b does not have. Section 3 would",
+            "merge origin/$b into it, and its pull request would land all of it on $b.",
+            '',
+            "If it belongs on $other, say so:  .\scripts\finish.ps1 -Base $other ...",
+            "or give such branches a prefix that BASE_BY_PREFIX in scripts/workflow.conf maps to $other.",
+            "If it belongs on $b, it was cut from the wrong branch: tell the user and wait")
+    }
 }
 
 # --------------------------------------------------------------- section 1: preflight
@@ -618,6 +678,7 @@ function Get-ClaimField {
 $script:ProjectName        = 'this repository'
 $script:DefaultBase        = ''
 $script:AltBases           = ''
+$script:BaseByPrefix       = ''
 $script:BranchTypes        = 'feat,fix,spike,docs,chore'
 $script:CheckCommand       = '.\scripts\check.ps1'
 $script:Lockfiles          = 'Cargo.lock,package-lock.json,pnpm-lock.yaml,yarn.lock,poetry.lock,Gemfile.lock,go.sum,composer.lock'
@@ -643,6 +704,7 @@ function Import-WorkflowConfig {
             'PROJECT_NAME'          { if ($value) { $script:ProjectName = $value } }
             'DEFAULT_BASE'          { $script:DefaultBase = $value }
             'ALT_BASES'             { $script:AltBases = $value }
+            'BASE_BY_PREFIX'        { $script:BaseByPrefix = $value }
             'BRANCH_TYPES'          { if ($value) { $script:BranchTypes = $value } }
             'CHECK_COMMAND'         { }   # read by the bash twin
             'CHECK_COMMAND_WINDOWS' { if ($value) { $script:CheckCommand = $value } }
@@ -662,6 +724,26 @@ function Import-WorkflowConfig {
         exit 2
     }
     $script:LargeDiffLines = [int]$script:LargeDiffLines
+
+    foreach ($pair in (Get-ConfigItems $script:BaseByPrefix)) {
+        if ($pair -notmatch '^[^:]+:[^:]+$') {
+            Write-Host "workflow.conf: BASE_BY_PREFIX entries are prefix:base, not '$pair'" -ForegroundColor Red
+            exit 2
+        }
+        $parts = $pair -split ':'
+        if (-not (Test-SafeRef $parts[0]) -or -not (Test-SafeRef $parts[1])) {
+            Write-Host "workflow.conf: BASE_BY_PREFIX holds an invalid branch name: $pair" -ForegroundColor Red
+            exit 2
+        }
+    }
+}
+
+# The BASE_BY_PREFIX pairs, as objects with a Prefix and a Base.
+function Get-BaseMappings {
+    foreach ($pair in (Get-ConfigItems $script:BaseByPrefix)) {
+        $parts = $pair -split ':', 2
+        [pscustomobject]@{ Prefix = $parts[0]; Base = $parts[1] }
+    }
 }
 
 # A comma-separated value as an array of trimmed, non-empty items.
@@ -832,6 +914,8 @@ function Invoke-Preflight {
             'name the base branch with DEFAULT_BASE in scripts/workflow.conf')
     }
 
+    Test-CutFrom
+
     $script:Commits = [int]((git rev-list --count "origin/$($script:BaseName)..HEAD") | Select-Object -First 1)
     if ($script:Commits -eq 0) {
         Stop-Now "this branch has no commits that origin/$($script:BaseName) does not already have" @(
@@ -889,6 +973,7 @@ function Invoke-Preflight {
 
     Write-Fine ("branch        {0}" -f $script:BranchName)
     Write-Fine ("base          origin/{0}  ({1})" -f $script:BaseName, $script:BaseWhy)
+    foreach ($n in $script:BaseNotes) { Write-Action ("note          {0}" -f $n) }
     Write-Fine ("commits       {0} ahead of origin/{1}" -f $script:Commits, $script:BaseName)
     Write-Fine ("claim         {0}" -f $script:ClaimSubject)
     Write-Fine ("author        {0}" -f $claimAuthor)
@@ -1195,7 +1280,7 @@ $script:PrTitle  = ''
 
 # The branch-name prefix, from workflow.conf's BRANCH_TYPES. Empty when none matches.
 function Get-PrType {
-    foreach ($t in (Get-ConfigItems $script:BranchTypes)) {
+    foreach ($t in (@(Get-ConfigItems $script:BranchTypes) + @(Get-BaseMappings | ForEach-Object { $_.Prefix }))) {
         if ($script:BranchName.StartsWith("$t/")) { return $t }
     }
     return ''

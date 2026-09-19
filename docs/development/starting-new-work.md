@@ -216,6 +216,17 @@ git switch -c spike/websocket-transport origin/<alternate-base>
 
 `scripts/finish.*` reads which base a branch was cut from, and refuses to guess when it cannot tell. With `ALT_BASES` empty, this section does not apply. Everything else in this document applies unchanged.
 
+### When `main` is the release branch
+
+Where work lands on `develop` and `main` is released from it, `BASE_BY_PREFIX` in `scripts/workflow.conf` maps the hotfix prefix to `main`, as in `hotfix:main`. A hotfix branches from `main`, and everything else from `develop`:
+
+```bash
+git switch -c hotfix/login-crash origin/main
+git switch -c feat/api-rate-limiting origin/develop
+```
+
+The prefix decides the base. `scripts/finish.*` stops a branch cut from one of these but named for the other, before it merges anything into it.
+
 ### 4.4 Write the claim commit
 
 An empty commit whose body declares what you are doing. **Its subject starts `claim: `, lowercase**, and the body carries the fields below. `scripts/finish.*` reads the first commit off the base as the claim, and refuses a branch whose first commit does not start `claim:`.

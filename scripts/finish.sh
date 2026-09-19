@@ -27,7 +27,8 @@
 #
 # WHAT THE PROJECT SUPPLIES
 #   scripts/workflow.conf      KEY=value settings: the base branches, the branch-name
-#                              prefixes, the check command quoted in messages, and the
+#                              prefixes and any base a prefix maps to, the check
+#                              command quoted in messages, and the
 #                              path classes flagged for --acknowledge. Every key has a
 #                              default, so a missing file changes nothing.
 #   scripts/finish-project.sh  optional. Sourced if present; defines project_scans, which
@@ -242,6 +243,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_NAME='this repository'
 DEFAULT_BASE=''
 ALT_BASES=''
+BASE_BY_PREFIX=''
 BRANCH_TYPES='feat,fix,spike,docs,chore'
 CHECK_COMMAND='./scripts/check.sh'
 LOCKFILES='Cargo.lock,package-lock.json,pnpm-lock.yaml,yarn.lock,poetry.lock,Gemfile.lock,go.sum,composer.lock'
@@ -265,6 +267,7 @@ load_config() {
       PROJECT_NAME)          [ -n "$value" ] && PROJECT_NAME="$value" ;;
       DEFAULT_BASE)          DEFAULT_BASE="$value" ;;
       ALT_BASES)             ALT_BASES="$value" ;;
+      BASE_BY_PREFIX)        BASE_BY_PREFIX="$value" ;;
       BRANCH_TYPES)          [ -n "$value" ] && BRANCH_TYPES="$value" ;;
       CHECK_COMMAND)         [ -n "$value" ] && CHECK_COMMAND="$value" ;;
       CHECK_COMMAND_WINDOWS) : ;;   # read by the PowerShell twin
@@ -281,6 +284,32 @@ load_config() {
   case "$LARGE_DIFF_LINES" in
     ''|*[!0-9]*) echo 'workflow.conf: LARGE_DIFF_LINES must be a whole number' >&2; exit 2 ;;
   esac
+
+  local pair
+  while IFS= read -r pair; do
+    [ -n "$pair" ] || continue
+    case "$pair" in
+      ?*:?*) : ;;
+      *) echo "workflow.conf: BASE_BY_PREFIX entries are prefix:base, not '$pair'" >&2; exit 2 ;;
+    esac
+    if ! safe_ref "${pair%%:*}" || ! safe_ref "${pair#*:}"; then
+      echo "workflow.conf: BASE_BY_PREFIX holds an invalid branch name: $pair" >&2
+      exit 2
+    fi
+  done <<EOF
+$(each_item "$BASE_BY_PREFIX")
+EOF
+}
+
+# Prints "prefix base" for each BASE_BY_PREFIX pair, one per line.
+each_mapping() {
+  local pair
+  while IFS= read -r pair; do
+    [ -n "$pair" ] && printf '%s %s\n' "${pair%%:*}" "${pair#*:}"
+  done <<EOF
+$(each_item "$BASE_BY_PREFIX")
+EOF
+  return 0
 }
 
 # Prints a comma-separated value one item per line, trimmed, blanks dropped.
@@ -493,6 +522,8 @@ ROOT=''
 BRANCH=''
 BASE=''
 BASE_WHY=''
+RESOLVED_DEFAULT=''
+BASE_NOTES=''     # newline separated, printed by preflight under the base line
 
 repo_context() {
   git rev-parse --git-dir >/dev/null 2>&1 || stop \
@@ -594,10 +625,31 @@ resolve_base() {
     default="${default#origin/}"
     [ -n "$default" ] || default='main'
   fi
+  RESOLVED_DEFAULT="$default"
+
+  # A prefix BASE_BY_PREFIX maps names its base outright - a hotfix/ branch that lands on
+  # main while everything else lands on develop. Nothing in the history can say that as
+  # reliably as the name the branch was given when it was claimed.
+  local prefix mapped
+  while read -r prefix mapped; do
+    [ -n "$prefix" ] || continue
+    case "$BRANCH" in
+      "$prefix"/*)
+        git rev-parse --verify -q "refs/remotes/origin/$mapped" >/dev/null 2>&1 || stop \
+          "origin/$mapped does not exist" \
+          "BASE_BY_PREFIX in scripts/workflow.conf maps $prefix/ branches to it"
+        BASE="$mapped"
+        BASE_WHY="the $prefix/ prefix maps to $mapped in workflow.conf"
+        return 0 ;;
+    esac
+  done <<EOF
+$(each_mapping)
+EOF
 
   # Every alternate base that exists on the remote and has diverged from the default is a
   # candidate. One that has not diverged is indistinguishable from the default, and the
-  # default is the safe reading.
+  # default is the safe reading. So is one the default contains, such as a main that
+  # develop merges from: every branch off the default contains it too.
   local alt candidates='' default_sha alt_sha
   default_sha=$(git rev-parse -q --verify "refs/remotes/origin/$default" 2>/dev/null || true)
   while IFS= read -r alt; do
@@ -606,6 +658,10 @@ resolve_base() {
     alt_sha=$(git rev-parse -q --verify "refs/remotes/origin/$alt" 2>/dev/null || true)
     [ -n "$alt_sha" ] || continue
     [ "$alt_sha" != "$default_sha" ] || continue
+    if [ -n "$default_sha" ] && git merge-base --is-ancestor "$alt_sha" "$default_sha" 2>/dev/null; then
+      BASE_NOTES="${BASE_NOTES}${BASE_NOTES:+$'\n'}ALT_BASES lists $alt, which origin/$default contains, so it is ignored: name its branches with BASE_BY_PREFIX"
+      continue
+    fi
     candidates="${candidates}${candidates:+$'\n'}$alt"
   done <<EOF
 $(each_item "$ALT_BASES")
@@ -687,9 +743,53 @@ is_base_branch() {
   while IFS= read -r b; do
     [ -n "$b" ] && [ "$1" = "$b" ] && return 0
   done <<EOF
-$(each_item "$ALT_BASES")
+$(long_lived_branches)
 EOF
   return 1
+}
+
+# Every branch this repository treats as long-lived: the default, main and master, the
+# alternate bases and the bases BASE_BY_PREFIX maps to. One per line, possibly repeated.
+long_lived_branches() {
+  local prefix mapped
+  printf '%s\n' "$RESOLVED_DEFAULT" main master
+  each_item "$ALT_BASES"
+  while read -r prefix mapped; do
+    [ -n "$mapped" ] && printf '%s\n' "$mapped"
+  done <<EOF
+$(each_mapping)
+EOF
+  return 0
+}
+
+# A branch cut from one long-lived branch but resolving to another would have the wrong
+# base merged into it by section 3, and its pull request would land it on the wrong
+# branch. The sign is a fork point with another long-lived branch that the resolved base
+# does not contain: the branch carries commits of that branch which are not on the base.
+check_cut_from() {
+  [ "$BASE_WHY" = 'given with --base' ] && return 0
+  local other fork seen=''
+  while IFS= read -r other; do
+    [ -n "$other" ] && [ "$other" != "$BASE" ] || continue
+    case "$seen" in *" $other "*) continue ;; esac
+    seen="$seen $other "
+    git rev-parse --verify -q "refs/remotes/origin/$other" >/dev/null 2>&1 || continue
+    fork=$(git merge-base HEAD "refs/remotes/origin/$other" 2>/dev/null || true)
+    [ -n "$fork" ] || continue
+    git merge-base --is-ancestor "$fork" "refs/remotes/origin/$BASE" 2>/dev/null && continue
+    stop \
+      "this branch was cut from origin/$other, but resolves to origin/$BASE" \
+      "origin/$BASE is the base here ($BASE_WHY), but the branch" \
+      "carries commits of origin/$other that origin/$BASE does not have. Section 3 would" \
+      "merge origin/$BASE into it, and its pull request would land all of it on $BASE." \
+      '' \
+      "If it belongs on $other, say so:  ./scripts/finish.sh --base $other ..." \
+      "or give such branches a prefix that BASE_BY_PREFIX in scripts/workflow.conf maps to $other." \
+      "If it belongs on $BASE, it was cut from the wrong branch: tell the user and wait"
+  done <<EOF
+$(long_lived_branches)
+EOF
+  return 0
 }
 
 # --------------------------------------------------------------- section 1: preflight
@@ -762,6 +862,8 @@ preflight() {
     "origin/$BASE does not exist" \
     'name the base branch with DEFAULT_BASE in scripts/workflow.conf'
 
+  check_cut_from
+
   COMMITS=$(git rev-list --count "origin/$BASE..HEAD")
   if [ "$COMMITS" -eq 0 ]; then
     stop \
@@ -832,6 +934,9 @@ preflight() {
 
   fine "branch        $BRANCH"
   fine "base          origin/$BASE  ($BASE_WHY)"
+  if [ -n "$BASE_NOTES" ]; then
+    printf '%s\n' "$BASE_NOTES" | while IFS= read -r line; do action "note          $line"; done
+  fi
   fine "commits       $COMMITS ahead of origin/$BASE"
   fine "claim         $CLAIM_SUBJECT"
   fine "author        $claim_author"
@@ -1175,6 +1280,7 @@ pr_type() {
     esac
   done <<EOF
 $(each_item "$BRANCH_TYPES")
+$(each_mapping | cut -d' ' -f1)
 EOF
   printf ''
 }
