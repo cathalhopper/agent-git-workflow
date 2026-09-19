@@ -693,6 +693,19 @@ preflight() {
     'you are not on a branch, so there is nothing to finish' \
     'git switch <your-branch> first'
 
+  load_capabilities
+  require_github_route
+
+  # The fetch is the one mutating command --dry-run still performs. Every answer below,
+  # the base branch included, depends on remote-tracking refs being current, and the
+  # document's own rule is that a check against a stale remote is worse than no check
+  # because it answers with authority.
+  printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
+  git fetch --all --prune >/dev/null 2>&1 || stop \
+    'git fetch failed' \
+    'your view of the remote is stale, so every check below would be answering from' \
+    'old information. Fix the connection and re-run - do not proceed on this'
+
   resolve_base
 
   if is_base_branch "$BRANCH"; then
@@ -702,18 +715,6 @@ preflight() {
       'section 5 of the document is explicit that there is no situation where pushing' \
       'straight to a base branch is the answer'
   fi
-
-  load_capabilities
-  require_github_route
-
-  # The fetch is the one mutating command --dry-run still performs. Every answer below
-  # depends on remote-tracking refs being current, and the document's own rule is that a
-  # check against a stale remote is worse than no check because it answers with authority.
-  printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
-  git fetch --all --prune >/dev/null 2>&1 || stop \
-    'git fetch failed' \
-    'your view of the remote is stale, so every check below would be answering from' \
-    'old information. Fix the connection and re-run - do not proceed on this'
 
   if [ -n "$(git status --porcelain)" ]; then
     stop \
@@ -726,7 +727,8 @@ preflight() {
   fi
 
   git rev-parse --verify -q "refs/remotes/origin/$BASE" >/dev/null 2>&1 || stop \
-    "origin/$BASE does not exist"
+    "origin/$BASE does not exist" \
+    'name the base branch with DEFAULT_BASE in scripts/workflow.conf'
 
   COMMITS=$(git rev-list --count "origin/$BASE..HEAD")
   if [ "$COMMITS" -eq 0 ]; then
@@ -759,6 +761,7 @@ preflight() {
       'you did not create this branch' \
       "the claim commit was written by $claim_author" \
       "you are $me" \
+      "the claim commit is the first commit after origin/$BASE ($BASE_WHY)" \
       '' \
       "finishing someone else's work is their decision and their timing - they may know" \
       'something about it that you do not. Tell them it looks ready and wait'

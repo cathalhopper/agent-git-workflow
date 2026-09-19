@@ -164,7 +164,8 @@ Set-StrictMode -Version Latest
 # this is the script that pushes, opens pull requests and merges.
 #
 # The two places that genuinely continue past a failure say so locally -- the
-# -ErrorAction SilentlyContinue at the Remove-Item and the gh probe.
+# -ErrorAction SilentlyContinue at the Remove-Item and the gh probe. A native command
+# whose stderr is redirected runs inside Invoke-Quiet, which judges it by exit code.
 $ErrorActionPreference = 'Stop'
 
 # --------------------------------------------------------------------------- arguments
@@ -287,6 +288,17 @@ function Invoke-Mutating {
     return $LASTEXITCODE
 }
 
+# Runs a read-only native command whose stderr the call site redirects. Windows
+# PowerShell 5.1 turns redirected stderr into error records, and under 'Stop' the first
+# one ends the script: `git fetch` writes its progress there, and `gh pr view` writes
+# "no pull requests found" there. The preference is 'Continue' in here only; callers
+# read $LASTEXITCODE, as they would after a bare call.
+function Invoke-Quiet {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $ErrorActionPreference = 'Continue'
+    & $Command
+}
+
 # Refs and SHAs are validated before they are ever handed to git. No git subcommand or
 # flag is ever built from a variable anywhere in this file - variables only ever occupy
 # value positions, passed as discrete arguments. There is no Invoke-Expression.
@@ -358,7 +370,7 @@ $script:BaseName    = ''
 $script:BaseWhy     = ''
 
 function Get-RepoContext {
-    git rev-parse --git-dir *> $null
+    Invoke-Quiet { git rev-parse --git-dir *> $null }
     if ($LASTEXITCODE -ne 0) {
         Stop-Now 'this is not a git repository' @(
             'run the script from inside the repository you are finishing work in')
@@ -412,7 +424,7 @@ function Get-LockReasonFor {
 
 function Test-RemoteRef {
     param([string]$Name)
-    git rev-parse --verify -q "refs/remotes/origin/$Name" *> $null
+    Invoke-Quiet { git rev-parse --verify -q "refs/remotes/origin/$Name" *> $null }
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -475,7 +487,7 @@ function Resolve-Base {
     # An alternate base in this branch's history means the branch was cut from it.
     $contained = @()
     foreach ($alt in $candidates) {
-        git merge-base --is-ancestor "refs/remotes/origin/$alt" HEAD *> $null
+        Invoke-Quiet { git merge-base --is-ancestor "refs/remotes/origin/$alt" HEAD *> $null }
         if ($LASTEXITCODE -eq 0) { $contained += $alt }
     }
 
@@ -486,7 +498,7 @@ function Resolve-Base {
     }
 
     if ($contained.Count -eq 0) {
-        git merge-base --is-ancestor "refs/remotes/origin/$default" HEAD *> $null
+        Invoke-Quiet { git merge-base --is-ancestor "refs/remotes/origin/$default" HEAD *> $null }
         if ($LASTEXITCODE -eq 0) {
             $script:BaseName = $default
             $script:BaseWhy  = 'the default branch'
@@ -676,7 +688,7 @@ gh is not installed, or is installed but not authenticated.
   then        gh auth login
 '@
         if (Get-Command gh -ErrorAction SilentlyContinue) {
-            gh auth status *> $null
+            Invoke-Quiet { gh auth status *> $null }
             if ($LASTEXITCODE -eq 0) {
                 $script:CapGh    = 1
                 $script:EnvTier  = 'workstation'
@@ -743,6 +755,21 @@ function Invoke-Preflight {
             'git switch <your-branch> first')
     }
 
+    Import-Capabilities
+    Assert-GithubRoute
+
+    # The fetch is the one mutating command -DryRun still performs. Every answer below,
+    # the base branch included, depends on remote-tracking refs being current, and the
+    # document's own rule is that a check against a stale remote is worse than no check
+    # because it answers with authority.
+    Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
+    Invoke-Quiet { git fetch --all --prune *> $null }
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Now 'git fetch failed' @(
+            'your view of the remote is stale, so every check below would be answering from',
+            'old information. Fix the connection and re-run - do not proceed on this')
+    }
+
     Resolve-Base
 
     if (Test-BaseBranch $script:BranchName) {
@@ -750,21 +777,6 @@ function Invoke-Preflight {
             'this script finishes a feature branch. It never pushes to a base branch, and',
             'section 5 of the document is explicit that there is no situation where pushing',
             'straight to a base branch is the answer')
-    }
-
-    Import-Capabilities
-    Assert-GithubRoute
-
-    # The fetch is the one mutating command -DryRun still performs. Every answer below
-    # depends on remote-tracking refs being current, and the document's own rule is that
-    # a check against a stale remote is worse than no check because it answers with
-    # authority.
-    Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
-    git fetch --all --prune *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Now 'git fetch failed' @(
-            'your view of the remote is stale, so every check below would be answering from',
-            'old information. Fix the connection and re-run - do not proceed on this')
     }
 
     $dirty = @(git status --porcelain)
@@ -778,7 +790,8 @@ function Invoke-Preflight {
     }
 
     if (-not (Test-RemoteRef $script:BaseName)) {
-        Stop-Now "origin/$($script:BaseName) does not exist"
+        Stop-Now "origin/$($script:BaseName) does not exist" @(
+            'name the base branch with DEFAULT_BASE in scripts/workflow.conf')
     }
 
     $script:Commits = [int]((git rev-list --count "origin/$($script:BaseName)..HEAD") | Select-Object -First 1)
@@ -808,6 +821,7 @@ function Invoke-Preflight {
         Stop-Now 'you did not create this branch' @(
             "the claim commit was written by $claimAuthor",
             "you are $me",
+            "the claim commit is the first commit after origin/$($script:BaseName) ($($script:BaseWhy))",
             '',
             "finishing someone else's work is their decision and their timing - they may know",
             'something about it that you do not. Tell them it looks ready and wait')
@@ -1205,7 +1219,7 @@ function New-PullRequest {
     # pull request.
     $existing = $null
     if ($script:CapGh -eq 1) {
-        $existing = (gh pr view $script:BranchName --json number,state,url --jq '[.number,.state,.url]|@tsv' 2>$null) | Select-Object -First 1
+        $existing = (Invoke-Quiet { gh pr view $script:BranchName --json number,state,url --jq '[.number,.state,.url]|@tsv' 2>$null }) | Select-Object -First 1
     }
     if ($script:CapGh -eq 1 -and $LASTEXITCODE -eq 0 -and $existing) {
         $parts = $existing -split "`t"
@@ -1375,7 +1389,7 @@ function Merge-PullRequest {
     # One call, one line back, tab separated. gh embeds its own jq, so nothing extra
     # needs to be installed and no JSON is parsed by hand here.
     $jq = '[.number, .state, (.isDraft|tostring), .author.login, .baseRefName, .headRefOid, .mergeable, .mergeStateStatus, .url, .title] | @tsv'
-    $line = (gh pr view $script:BranchName --json number,state,isDraft,author,baseRefName,headRefOid,mergeable,mergeStateStatus,url,title --jq $jq 2>$null) | Select-Object -First 1
+    $line = (Invoke-Quiet { gh pr view $script:BranchName --json number,state,isDraft,author,baseRefName,headRefOid,mergeable,mergeStateStatus,url,title --jq $jq 2>$null }) | Select-Object -First 1
     if ($LASTEXITCODE -ne 0 -or -not $line) {
         Stop-Now 'there is no pull request for this branch' @(
             'open one first:  .\scripts\finish.ps1 -Pr -Testing "..."')
@@ -1472,7 +1486,7 @@ function Merge-PullRequest {
     }
 
     Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
-    git fetch --all --prune *> $null
+    Invoke-Quiet { git fetch --all --prune *> $null }
     if ($LASTEXITCODE -ne 0) { Stop-Now 'git fetch failed after the merge' }
 
     $script:SquashSha = (gh pr view $script:PrNumber --json mergeCommit --jq '.mergeCommit.oid') | Select-Object -First 1
@@ -1488,7 +1502,7 @@ function Merge-PullRequest {
     # firing a delete at a ref that is not there prints a failure for a step that
     # succeeded. Reading first makes the normal case quiet and leaves the delete for the
     # case that still needs it - a repository with the setting off.
-    $stillThere = @(git ls-remote --heads origin $script:BranchName 2>$null)
+    $stillThere = @(Invoke-Quiet { git ls-remote --heads origin $script:BranchName 2>$null })
     if ($stillThere.Count -gt 0) {
         $rc = Invoke-Mutating 'git' @('push', 'origin', '--delete', $script:BranchName)
         if ($rc -eq 0) { $script:CleanupNotes += 'remote branch deleted' }
@@ -1505,7 +1519,7 @@ function Merge-PullRequest {
 function Confirm-Landed {
     param([string]$CommitSha)
 
-    git merge-base --is-ancestor $CommitSha "origin/$($script:BaseName)" *> $null
+    Invoke-Quiet { git merge-base --is-ancestor $CommitSha "origin/$($script:BaseName)" *> $null }
     if ($LASTEXITCODE -ne 0) {
         Stop-Now "the squashed commit is not on origin/$($script:BaseName)" @(
             "  commit  $CommitSha",
@@ -1692,14 +1706,14 @@ try {
         Resolve-Base
 
         Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
-        git fetch --all --prune *> $null
+        Invoke-Quiet { git fetch --all --prune *> $null }
         if ($LASTEXITCODE -ne 0) { Stop-Now 'git fetch failed' }
 
         # $landed, not $sha: case-insensitive names mean a local $sha would be the $Sha
         # parameter itself.
         $landed = $Sha
         if (-not $landed) {
-            $landed = (gh pr view $script:BranchName --json mergeCommit --jq '.mergeCommit.oid' 2>$null) | Select-Object -First 1
+            $landed = (Invoke-Quiet { gh pr view $script:BranchName --json mergeCommit --jq '.mergeCommit.oid' 2>$null }) | Select-Object -First 1
         }
         if (-not $landed -or $landed -eq 'null') {
             Stop-Now 'cannot confirm this branch was merged' @(

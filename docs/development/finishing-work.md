@@ -102,7 +102,7 @@ Do not open a PR you already know is red.
 | `binary file` | an added file `.gitattributes` marks `binary` | `--acknowledge` |
 | `debug scaffolding` | an added line matching the built-in leftover pattern or `SCAFFOLDING_PATTERN` | none — a finding only |
 | `large diff` | more changed lines than `LARGE_DIFF_LINES` | none — a finding only |
-| a credential in an added line | tokens, private keys, `password = …` | **a stop, with no flag.** Change the line |
+| a credential in an added line | tokens, private keys, a password assigned a value | **a stop, with no flag.** Change the line |
 
 **What a project adds.** `scripts/finish-project.sh` and `scripts/finish-project.ps1`, when present, run the project's own scans after these. A project scan that needs a human assertion stops unless the run declares it by name with `--declare <name>`, and the declaration is written into the pull-request body. `--declare` refuses any name no scan asked for on that run, so it cannot pre-authorise a stop that has not fired. `scripts/finish-project.sh.example` carries the contract.
 
@@ -264,7 +264,8 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 | It says | Cause | What to do |
 |---|---|---|
 | `the working tree is not clean` | Uncommitted changes exist in exactly one place | Decide what they are for and commit or remove them yourself. The script never stashes them |
-| `you did not create this branch` | The claim commit's author is not your git identity | Tell the owner it looks ready, and wait |
+| `you did not create this branch` | The claim commit's author is not your git identity | Tell the owner it looks ready, and wait. If the base the stop names is wrong, re-run with `--base <branch>` instead |
+| `origin/<base> does not exist` | The resolved base is not on the remote, usually because `origin/HEAD` is unset and the base is not `main` | Set `DEFAULT_BASE` in `scripts/workflow.conf` |
 | `cannot tell which base branch this branch targets` | Two candidate bases are equally distant from `HEAD`, and the script does not guess | Say which: `--base <branch>` (`-Base` in PowerShell). See [`starting-new-work.md`](starting-new-work.md) §4.3 |
 | `some changed files need a decision` | A path from the §2 check 5 table was flagged | Look at each one. If it belongs, re-run with `--acknowledge <path,...>` |
 | a project scan stops, naming a `--declare` value | `scripts/finish-project.*` found a change that needs a human assertion | If intended, re-run with `--declare <name>`. If not, investigate before anything else |

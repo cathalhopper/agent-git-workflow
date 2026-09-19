@@ -9,8 +9,15 @@ Every step is something you do once. Nothing here edits the shipped scripts or p
 From the root of your repository:
 
 ```bash
-cp -r <path-to-agent-git-workflow>/docs/development docs/
+mkdir -p docs/development scripts
+cp -r <path-to-agent-git-workflow>/docs/development/. docs/development/
 cp -r <path-to-agent-git-workflow>/scripts/. scripts/
+```
+
+```powershell
+New-Item -ItemType Directory -Force docs\development, scripts | Out-Null
+Copy-Item -Recurse <path-to-agent-git-workflow>\docs\development\* docs\development\
+Copy-Item -Recurse <path-to-agent-git-workflow>\scripts\* scripts\
 ```
 
 The paths are fixed. The scripts cite `docs/development/finishing-work.md` by path in their stop messages, so keep the documents where they land.
@@ -19,11 +26,11 @@ If your repository already has a `scripts/check.sh` or a `docs/development/READM
 
 ## 2. Set the executable bit on the shell scripts
 
-On Windows, git records new files as `100644` and a Linux CI runner then refuses to execute them. Set the bit explicitly, whatever platform you are on:
+On Windows, git records new files as `100644` and a Linux CI runner then refuses to execute them. Set the bit explicitly, whatever platform you are on, naming the files so the command works from either shell:
 
 ```bash
-git add scripts/*.sh
-git update-index --chmod=+x scripts/*.sh
+git add scripts/finish.sh scripts/setup.sh scripts/env-capabilities.sh
+git update-index --chmod=+x scripts/finish.sh scripts/setup.sh scripts/env-capabilities.sh
 ```
 
 ## 3. Fill in `scripts/workflow.conf`
@@ -36,7 +43,7 @@ Every key has a default, so start with the ones that are wrong for you.
 | `DEFAULT_BASE` | Your base branch is not `origin/HEAD` |
 | `ALT_BASES` | Some work lands on a long-lived branch other than the default, such as a prototype branch |
 | `BRANCH_TYPES` | Your branch prefixes are not `feat`, `fix`, `spike`, `docs`, `chore` |
-| `CHECK_COMMAND`, `CHECK_COMMAND_WINDOWS` | Your one local check command is not `scripts/check.*` |
+| `CHECK_COMMAND`, `CHECK_COMMAND_WINDOWS` | Your one local check command is not `scripts/check.*`. None ships with this set: write it, or name yours here |
 | `LOCKFILES` | Your ecosystem's lockfile is not in the list |
 | `GOVERNING_PATHS` | A file changes the rules for everyone, such as a pinned toolchain file |
 | `SCAFFOLDING_PATTERN` | Your language has a debug leftover the built-in pattern misses |
@@ -68,6 +75,7 @@ Claude Code reads `CLAUDE.md`. Point it at the same file with one line:
 ```gitattributes
 * text=auto
 *.sh  text eol=lf
+*.example text eol=lf
 *.ps1 text eol=crlf
 
 *.png  binary
@@ -93,7 +101,7 @@ Write both files, or neither. The two shells must behave identically.
 
 ## 8. Rehearse before anyone relies on it
 
-On a throwaway branch, from the primary checkout:
+On a throwaway branch, from the primary checkout. Replace `main` with your base branch:
 
 ```bash
 git switch -c chore/rehearse-finish origin/main
@@ -108,14 +116,14 @@ If you wrote a project scan, make a change it should stop on, and confirm the ba
 
 ## 9. Run the check command in CI
 
-The finish scripts refuse to merge on a failing check, and read "workflows but no check runs" as broken CI. One job that runs the same command contributors run locally is enough:
+The finish scripts refuse to merge on a failing check, and read "workflows but no check runs" as broken CI, so the workflow runs on pull requests to every base branch. One job that runs the same command contributors run locally is enough:
 
 ```yaml
 name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main]   # your base branch
 permissions:
   contents: read
 jobs:

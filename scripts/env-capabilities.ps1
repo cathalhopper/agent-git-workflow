@@ -73,7 +73,9 @@ $EnvPlatform = Get-EnvPlatform
 # The only capability established by trying the tool rather than by inference.
 $CapGh = 0
 if (Get-Command gh -ErrorAction SilentlyContinue) {
-    gh auth status *> $null
+    # Scoped to 'Continue': finish.ps1 dot-sources this under 'Stop', where Windows
+    # PowerShell 5.1 ends the script on the redirected stderr of an unauthenticated gh.
+    & { $ErrorActionPreference = 'Continue'; gh auth status *> $null }
     if ($LASTEXITCODE -eq 0) { $CapGh = 1 }
 }
 
