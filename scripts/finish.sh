@@ -961,6 +961,42 @@ added_lines() {
   '
 }
 
+# Prints "path:lineno" for every added line whose content matches the extended regular
+# expression $1, sorted. $2 is 'i' for a case-insensitive match and empty otherwise. $3 is
+# an extended regular expression that excludes a content line from the result, or empty.
+#
+# The path is not part of the match. added_lines emits "path:lineno<TAB>content", so a
+# pattern handed the whole line matches the path too, and a repository with a directory
+# named home/ or Users/ has every added line under it reported as scaffolding. The
+# PowerShell twin matches the content field, and this is the same rule.
+#
+# The match stays in grep rather than moving into awk: these patterns use interval
+# expressions such as {36}, and the awk that ships with macOS does not support them, so an
+# awk secret scan matches nothing there and says so no more loudly than an empty diff.
+match_added_content() {
+  local re="$1" fold="$2" skip="$3" lines nums
+  lines=$(added_lines)
+  [ -n "$lines" ] || return 0
+
+  # grep -n numbers the content stream, which holds one line per added line, so the number
+  # it prints is the index back into $lines.
+  if [ "$fold" = 'i' ]; then
+    nums=$(printf '%s\n' "$lines" | cut -f2- | grep -inE "$re" || true)
+  else
+    nums=$(printf '%s\n' "$lines" | cut -f2- | grep -nE "$re" || true)
+  fi
+  [ -z "$skip" ] || nums=$(printf '%s\n' "$nums" | grep -ivE "$skip" || true)
+  nums=$(printf '%s\n' "$nums" | cut -d: -f1 | grep -v '^$' || true)
+  [ -n "$nums" ] || return 0
+
+  # index and substr rather than a regex: nothing here needs one, and the awk that ships
+  # with macOS is the reason the matching stayed in grep in the first place.
+  printf '%s\n' "$lines" | awk -v nums="$nums" '
+    BEGIN { n = split(nums, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") want[a[i] + 0] = 1 }
+    (FNR in want) { i = index($0, "\t"); print (i ? substr($0, 1, i - 1) : $0) }
+  ' | sort -u
+}
+
 # True when $1 is one of workflow.conf's LOCKFILES, by file name anywhere in the tree.
 is_lockfile() {
   local lf
@@ -1056,9 +1092,9 @@ scan_scaffolding() {
   [ -n "$SCAFFOLDING_PATTERN" ] && re="$re|$SCAFFOLDING_PATTERN"
   # The shipped scripts quote these patterns in their own text, so adopting or updating
   # them would otherwise report the workflow's own files as leftovers.
-  hits=$(added_lines \
+  hits=$(match_added_content "$re" '' '' \
     | grep -vE '^scripts/((finish|setup|env-capabilities)\.(sh|ps1)|finish-project\.(sh|ps1)\.example):' \
-    | grep -E "$re" | cut -f1 | sort -u || true)
+    || true)
   if [ -n "$hits" ]; then
     local n
     n=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
@@ -1068,10 +1104,29 @@ scan_scaffolding() {
 }
 
 scan_secrets() {
-  local re hits
+  local vendor generic reference hits
   # Deliberately conservative: over-reporting a secret is safe, missing one is not.
-  re='ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|gh[ousr]_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-|AIza[0-9A-Za-z_-]{35}|(secret|token|passwd|password|api[_-]?key)[[:space:]]*[:=][[:space:]]*.{12,}'
-  hits=$(added_lines | grep -iE "$re" | cut -f1 | sort -u || true)
+  #
+  # Two patterns, because only one of them can be narrowed. A vendor prefix is
+  # unambiguous: a line carrying one is a hit whatever else the line says.
+  vendor='ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|gh[ousr]_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-|AIza[0-9A-Za-z_-]{35}'
+
+  # The generic pattern claims that a value is a literal credential. Its alphabet holds no
+  # $, {, ( or <, so ${VAR}, getenv(...), os.environ[...] and <PLACEHOLDER> cannot match.
+  generic='(secret|token|passwd|password|api[_-]?key)[[:space:]]*[:=][[:space:]]*'"['\"]"'?[A-Za-z0-9_+/=.-]{12,}'
+
+  # Each entry is a claim about a value that names a credential rather than carrying one:
+  # an environment accessor reads it where the program runs and holds nothing itself. This
+  # narrows the generic pattern alone, so it can never hide a vendor prefix. Do not widen
+  # it to clear a stop - a stop clearable only by asserting something false teaches people
+  # to assert it.
+  reference='os\.environ|os\.getenv|process\.env|import\.meta\.env|deno\.env|system\.getenv|getenv|env\.fetch'
+
+  hits=$(
+    { match_added_content "$vendor" 'i' ''
+      match_added_content "$generic" 'i' "$reference"
+    } | sort -u || true
+  )
   if [ -n "$hits" ]; then
     # The matched text is never printed. A script that echoes a credential into a
     # terminal log, a CI log or an agent transcript has made the problem worse.

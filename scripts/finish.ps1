@@ -1096,7 +1096,9 @@ function Invoke-ScaffoldingScan {
     # The shipped scripts quote these patterns in their own text, so adopting or updating
     # them would otherwise report the workflow's own files as leftovers.
     $shipped = '^scripts/((finish|setup|env-capabilities)\.(sh|ps1)|finish-project\.(sh|ps1)\.example)$'
-    $hits = @(Get-AddedLines | Where-Object { $_.Path -notmatch $shipped -and $_.Content -cmatch $re } |
+    # The content field, never the path: a repository with a directory named home/ or
+    # Users/ would otherwise have every added line under it reported as scaffolding.
+    $hits = @(Get-AddedLines | Where-Object { $_.Path -cnotmatch $shipped -and $_.Content -cmatch $re } |
               ForEach-Object { "$($_.Path):$($_.Line)" } | Select-Object -Unique)
     if ($hits.Count -gt 0) {
         Add-Finding 'debug scaffolding' "$($hits.Count) added line(s) look like leftovers:"
@@ -1106,9 +1108,26 @@ function Invoke-ScaffoldingScan {
 
 function Invoke-SecretScan {
     # Deliberately conservative: over-reporting a secret is safe, missing one is not.
-    $re = 'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|gh[ousr]_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-|AIza[0-9A-Za-z_-]{35}|(secret|token|passwd|password|api[_-]?key)\s*[:=]\s*.{12,}'
-    $hits = @(Get-AddedLines | Where-Object { $_.Content -imatch $re } |
-              ForEach-Object { "$($_.Path):$($_.Line)" } | Select-Object -Unique)
+    #
+    # Two patterns, because only one of them can be narrowed. A vendor prefix is
+    # unambiguous: a line carrying one is a hit whatever else the line says.
+    $vendor = 'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|gh[ousr]_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-|AIza[0-9A-Za-z_-]{35}'
+
+    # The generic pattern claims that a value is a literal credential. Its alphabet holds no
+    # $, {, ( or <, so ${VAR}, getenv(...), os.environ[...] and <PLACEHOLDER> cannot match.
+    $generic = '(secret|token|passwd|password|api[_-]?key)\s*[:=]\s*["'']?[A-Za-z0-9_+/=.-]{12,}'
+
+    # Each entry is a claim about a value that names a credential rather than carrying one:
+    # an environment accessor reads it where the program runs and holds nothing itself. This
+    # narrows the generic pattern alone, so it can never hide a vendor prefix. Do not widen
+    # it to clear a stop - a stop clearable only by asserting something false teaches people
+    # to assert it.
+    $reference = 'os\.environ|os\.getenv|process\.env|import\.meta\.env|deno\.env|system\.getenv|getenv|env\.fetch'
+
+    $hits = @(Get-AddedLines | Where-Object {
+                  ($_.Content -imatch $vendor) -or
+                  (($_.Content -imatch $generic) -and ($_.Content -inotmatch $reference))
+              } | ForEach-Object { "$($_.Path):$($_.Line)" } | Select-Object -Unique)
     if ($hits.Count -gt 0) {
         # The matched text is never printed. A script that echoes a credential into a
         # terminal log, a CI log or an agent transcript has made the problem worse.
