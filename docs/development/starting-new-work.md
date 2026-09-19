@@ -38,10 +38,10 @@ origin/feat/api-rate-limiting | 6 hours ago | Sam Rivera
 origin/main                   | 2 days ago  | Alex Chen
 ```
 
-**2. Read the claims.** For any branch that looks even loosely related, its claim commit is the first commit off `main`:
+**2. Read the claims.** For any branch that looks even loosely related, its claim commit is the first commit off `origin/main`:
 
 ```bash
-git log main..origin/<branch> --reverse --format='%an <%ae>%n%ad%n%n%B' | head -40
+git log origin/main..origin/<branch> --reverse --format='%an <%ae>%n%ad%n%n%B' | head -40
 ```
 
 This is the owner, the date, and the `Scope`, `Touches` and `Split` fields.
@@ -49,7 +49,7 @@ This is the owner, the date, and the `Scope`, `Touches` and `Split` fields.
 **3. Check file-level overlap.**
 
 ```bash
-git diff --stat main...origin/<branch>
+git diff --stat origin/main...origin/<branch>
 ```
 
 Two branches editing the same file are in conflict whatever their names say.
@@ -65,7 +65,7 @@ If `gh` is not installed, skip this and say so, and point the user at [`setting-
 **5. Check whether it is already done.**
 
 ```bash
-git log main --oneline -30
+git log origin/main --oneline -30
 git log --all --oneline -i --grep='<keyword>'
 ```
 
@@ -87,6 +87,23 @@ When you are unsure, treat it as overlap.
 ### Dormant branches
 
 No commits for 14 days or more means dormant, not free.
+
+### Branches from before the workflow
+
+A branch created before this repository adopted these documents has no claim commit, so check 2 has nothing to read. Judge it by its name, its author from check 1, and its files:
+
+```bash
+git diff --stat origin/main...origin/<branch>
+```
+
+A branch merged but never deleted reads as a claim. It is merged when either of these lists it:
+
+```bash
+git branch -r --merged origin/main                        # landed by a merge commit
+gh pr list --state merged --head <branch> --json number,url   # landed by a squash
+```
+
+A merged branch is not overlap. Report it to the user as one its owner can delete; never delete it yourself.
 
 ---
 
@@ -201,7 +218,7 @@ git switch -c spike/websocket-transport origin/<alternate-base>
 
 ### 4.4 Write the claim commit
 
-An empty commit whose body declares what you are doing:
+An empty commit whose body declares what you are doing. **Its subject starts `claim: `, lowercase**, and the body carries the fields below. `scripts/finish.*` reads the first commit off the base as the claim, and refuses a branch whose first commit does not start `claim:`.
 
 ```bash
 git commit --allow-empty \
@@ -243,7 +260,7 @@ No overlapping branches or open PRs found.
 ## 5. While the work is in progress
 
 - **Push at least once a day.** It keeps your claim current and your work backed up.
-- **Merge `origin/main` into your branch as it moves, not just at the end.** `git fetch origin` then `git merge origin/main`. A branch that meets a fortnight of drift at once meets it as one large conflict, often in files someone else wrote, which is a **Stop** in [`finishing-work.md`](finishing-work.md) §3. Merge, never rebase. On a branch off an alternate base, the upstream is `origin/<alternate-base>`.
+- **Merge `origin/main` into your branch as it moves, not just at the end.** `git fetch origin` then `git merge origin/main`. A branch that meets a fortnight of drift at once meets it as one large conflict, often in hunks someone else wrote, which is a **Stop** in [`finishing-work.md`](finishing-work.md) §3. Merge, never rebase. On a branch off an alternate base, the upstream is `origin/<alternate-base>`.
 - **If scope grows past the claim, update the claim.** An empty follow-up commit is enough.
 - **If you abandon a branch, say so.** A dead claim blocks people as effectively as a live one. Delete the branch or push a commit saying it is abandoned.
 - **Re-run §2 if you return after a week away.**

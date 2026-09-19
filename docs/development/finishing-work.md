@@ -53,6 +53,15 @@ If the working tree is dirty, **stop and ask the user what to do with those chan
 
 If the branch is not yours, stop. Report the owner and wait.
 
+**A branch created before this repository adopted these documents** has no `scripts/finish.*` and no claim commit. Its owner merges the base in first, which brings the scripts, then passes the scope on every stage:
+
+```bash
+git merge origin/main
+./scripts/finish.sh --scope "what this branch does"
+```
+
+Without `--scope` the script stops at `the first commit on this branch is not a claim commit`.
+
 ---
 
 ## 2. Is it actually finished?
@@ -136,12 +145,12 @@ Never rebase, and never force-push: a rebase needs a force-push, which can destr
 | Situation | What happens |
 |---|---|
 | Merge is clean | Continue to §4 |
-| Conflicts, only in files you wrote, and the resolution is obvious | Resolve it, then **show the user the resolution before committing it** |
-| Conflicts in files someone else wrote | **Stop.** Report the files and who wrote them, and wait |
+| Every conflicting hunk is one where you can state what both sides intended, and the resolution keeps both | Resolve it, then **show the user the resolution before committing it** |
+| A conflicting hunk whose other side you cannot explain | **Stop.** Report the file, the hunk and who wrote the other side, and wait |
 | Conflicts you cannot resolve with confidence | **Stop.** `git merge --abort`, report, wait |
 | Conflicts in a binary, generated, scene or asset file | **Stop.** These do not merge. One side wins and that is a human decision |
 
-Never resolve a conflict by picking whichever side looks more complete.
+Never resolve a conflict by picking whichever side looks more complete, and never with `git checkout --ours`/`--theirs` or by taking one side of a file whole. After resolving, read `git diff origin/main...HEAD` and confirm every line the other side added is in the result.
 
 ---
 
@@ -166,7 +175,7 @@ Notes:    Bucket size left as a named constant - tuning is a follow-up, not this
 
 `Touches` is the **actual** file list from `git diff --stat`, not the guess in the claim. `Testing` says what you ran, not what you believe. `Notes` carries anything a reader would otherwise have to reconstruct — deliberate omissions, follow-up work, decisions that could reasonably have gone the other way. The script adds what you acknowledged and what you declared.
 
-**If `gh` cannot run here**, the `--pr` run still merges the base in and pushes, then prints the title and body and exits 3. Open the pull request with those values: by hand at the `pull/new/<branch>` URL git prints, or, in an agent session with GitHub tools, with those tools. The web form is not a reason to skip §2. Where `origin` is not on a GitHub host `gh` is logged in to, `scripts/env-capabilities.*` says so, and `--merge` stops naming that as the cause.
+**If `gh` cannot run here**, the `--pr` run merges the base in and pushes, then prints the title and body and exits 3. Open the pull request with those values: by hand at the `pull/new/<branch>` URL git prints, or, in an agent session with GitHub tools, with those tools. The web form is not a reason to skip §2. Where `origin` is not on a GitHub host `gh` is logged in to, `scripts/env-capabilities.*` says so, and `--merge` stops naming that as the cause.
 
 **Draft PRs.** Use `--draft` for work you want visible but not landable. A draft tells the next person's [`starting-new-work.md`](starting-new-work.md) §2 check 4 that the work exists *and* that it is not finished.
 
@@ -293,7 +302,8 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 - [ ] Bring branches up to date with `git merge origin/main`, never by rebasing
 - [ ] Never merge or close a pull request you did not open
 - [ ] Never open or merge a pull request that targets a different base than the branch was cut from (§4)
-- [ ] Never resolve a conflict in a file you did not write — stop and report it
+- [ ] Never resolve a conflicting hunk whose other side you cannot explain — stop and report it
+- [ ] Never resolve a conflict with `--ours`/`--theirs` or by taking one side of a file whole
 - [ ] Never resolve a conflict in a binary, generated, scene or asset file — stop and report it
 - [ ] Show the user any conflict resolution before committing it
 - [ ] Never `git branch -D` until `git log` has confirmed the work is on `main`

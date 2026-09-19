@@ -1,4 +1,4 @@
-<!-- ADOPTER: copy this file to the root of your repository as AGENTS.md. Replace <Project name>, replace `main` if your base branch differs, and write the two sections at the end. -->
+<!-- ADOPTER: copy this file to the root of your repository as AGENTS.md. Replace <Project name>, and write the two sections at the end. If your base branch is not `main`, add it beside `main` in the "Never commit" and "Never push" rules rather than replacing `main`, and write it in place of `main` in `git merge origin/main`. -->
 
 # <Project name>
 
@@ -41,7 +41,7 @@ The rules that matter most:
 - Never open or merge a pull request against a different base than the branch was cut from
 - Never force-push, and never rebase — bring branches up to date with `git merge origin/main`
 - Never merge or close a pull request you did not open
-- Never resolve a conflict in a file you did not write — stop and report it
+- Never resolve a conflicting hunk whose other side you cannot explain, and never with `--ours`/`--theirs` — stop and report it
 - Never resolve a conflict in a binary, generated, scene or asset file — these do not merge
 - After a squash merge, confirm the work is on the base with `git log` before deleting the local branch
 - Never merge with checks failing

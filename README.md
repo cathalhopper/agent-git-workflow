@@ -25,7 +25,7 @@ It is two procedures, written so a person or an agent can follow them exactly, a
 - Never commit or push directly to `main`
 - Never force-push, and never rebase. Bring branches up to date with `git merge`
 - Never modify a branch you did not create, and never merge a pull request you did not open
-- Never resolve a conflict in a file you did not write, or in a file that does not merge
+- Never resolve a conflict whose other side you cannot explain, or in a file that does not merge
 - Never stash or discard someone's uncommitted work to make a command possible
 - Never delete a branch until `git log` confirms the work landed
 - Never report "all clear" from a failed or stale `git fetch`
