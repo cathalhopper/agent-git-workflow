@@ -22,7 +22,9 @@ Sections 1 to 7 are the steps the script runs; run them by hand if it fails. Thr
 ./scripts/finish.sh --merge
 ```
 
-Add `-DryRun` / `--dry-run` to any stage to print the commands without running them. `-Cleanup` / `--cleanup` is the recovery path if a merge landed but cleanup did not. A file the bare run flagged that the branch means to include is acknowledged on the `--pr` run with `--acknowledge <path,...>` (`-Acknowledge` in PowerShell); it accepts only paths that run flagged, and writes what you acknowledged into the pull-request body where a reviewer sees it. A project stop that needs a human assertion is answered with `--declare <name,...>` (`-Declare`), per §2 check 5.
+Add `-DryRun` / `--dry-run` to any stage to print the commands without running them. `-Cleanup` / `--cleanup` is the recovery path if a merge landed but cleanup did not: it confirms the squashed commit is on the base, then deletes the remote branch, the worktree and the local branch. A file the bare run flagged that the branch means to include is acknowledged on the `--pr` run with `--acknowledge <path,...>` (`-Acknowledge` in PowerShell); it accepts only paths that run flagged, and writes what you acknowledged into the pull-request body where a reviewer sees it. A project stop that needs a human assertion is answered with `--declare <name,...>` (`-Declare`), per §2 check 5.
+
+**Every stop names the section of this document that explains it**, and says whether this run already changed anything — `Nothing was changed`, or the commands under `Already done in this run`, which are not undone.
 
 **What the bare run guarantees.** It creates no commit, no branch and no pull request; it deletes nothing; it changes no local branch, no working tree and nothing on the remote. It *does* update your remote-tracking refs, which is what makes its answers true.
 
@@ -164,7 +166,7 @@ Notes:    Bucket size left as a named constant - tuning is a follow-up, not this
 
 `Touches` is the **actual** file list from `git diff --stat`, not the guess in the claim. `Testing` says what you ran, not what you believe. `Notes` carries anything a reader would otherwise have to reconstruct — deliberate omissions, follow-up work, decisions that could reasonably have gone the other way. The script adds what you acknowledged and what you declared.
 
-**If `gh` cannot run here**, push the branch, open the `pull/new/<branch>` URL git prints, and fill in the same title and body by hand; the web form is not a reason to skip §2. In an agent session with GitHub tools and no `gh`, the `--pr` run pushes, prints the title and body, and exits 3 for the agent to open the pull request with those tools.
+**If `gh` cannot run here**, the `--pr` run still merges the base in and pushes, then prints the title and body and exits 3. Open the pull request with those values: by hand at the `pull/new/<branch>` URL git prints, or, in an agent session with GitHub tools, with those tools. The web form is not a reason to skip §2. Where `origin` is not on a GitHub host `gh` is logged in to, `scripts/env-capabilities.*` says so, and `--merge` stops naming that as the cause.
 
 **Draft PRs.** Use `--draft` for work you want visible but not landable. A draft tells the next person's [`starting-new-work.md`](starting-new-work.md) §2 check 4 that the work exists *and* that it is not finished.
 
@@ -205,7 +207,7 @@ git branch -D feat/api-rate-limiting
 
 Confirm your squashed commit is on `main` before deleting anything. `git branch -d` refuses after a squash merge because the squashed commit has a new SHA; once the log shows it, `-D` is correct.
 
-`--delete-branch` in §5 removed the remote branch, and that is the step that retires your claim. A merged branch left on the remote reads as an active claim to the next person running [`starting-new-work.md`](starting-new-work.md) §2.
+`--delete-branch` in §5 removed the remote branch, and that is the step that retires your claim. `scripts/finish.*` deletes it on `--merge` and on `--cleanup`, after confirming the squashed commit. A merged branch left on the remote reads as an active claim to the next person running [`starting-new-work.md`](starting-new-work.md) §2.
 
 ### If you were working in a git worktree
 
@@ -273,6 +275,12 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 | `an added line looks like a credential` | The secret scan matched an added line | Change the line. There is no flag to wave it through |
 | `this repository has workflows but the pull request has no check runs` | CI is configured and produced nothing | Broken CI, not a green branch. Do not merge; report it |
 | `checks none configured on this repository - nothing was verified` (a finding, not a stop) | The checkout carries no `.github/workflows` tree | Expected on a repository without CI. On one that has CI, it means the workflow is missing: stop and report it |
+| `you are on <base>` | The checkout is on a base branch, not on a claimed branch | Claim the work per [`starting-new-work.md`](starting-new-work.md) §4, or §6 there if you already committed to the base |
+| `the first commit on this branch is not a claim commit` | The first commit off the base does not start `claim:`, or the base resolved wrongly | Check the resolved base on the `base` line. If it is right and the branch predates the workflow, pass `--scope "<what it does>"` on every stage |
+| `gh pr create failed` | `gh` refused after the branch was pushed | Read gh's message above the stop. The branch is pushed, as `Already done in this run` lists; fix the cause and re-run `--pr` |
+| `there is no pull request for this branch` | `--merge` ran before `--pr` opened one | Run `--pr` first |
+| `gh could not read the pull request for this branch` | `gh` failed for a reason it names, such as `origin` not being a GitHub host | Act on what gh said. Where no GitHub route exists, land the branch through the remote's own review and run `--cleanup --sha <commit>` |
+| `this stage needs a route to GitHub, and there is none` | No usable `gh`: a cloud session, or `origin` not on a host `gh` is logged in to | Follow the route the stop prints |
 | `worktree not removed - it is locked` (after the merge) | Another tool owns that worktree's lifecycle, such as an agent session | Leave it through that tool. Otherwise `git worktree unlock <path>` from the primary checkout first. The script does not unlock it for you |
 
 ---

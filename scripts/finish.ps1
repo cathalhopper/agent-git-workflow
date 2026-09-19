@@ -204,6 +204,8 @@ $script:NotesExtra    = @()   # appended to the Notes: field of the pull request
 $script:Declared      = @()   # names given with -Declare
 $script:DeclaredAsked = @()   # names a scan asked Test-Declared about this run
 $script:DeclaredUsed  = @()   # names a scan asked about and found declared
+$script:Ran           = @()   # every state-changing command Invoke-Mutating completed
+$script:CurSection    = 1     # cites finishing-work.md section 1 to 6 by number, one per stage
 
 function Add-Finding {
     param([string]$Class, [string]$Detail)
@@ -228,7 +230,8 @@ function Test-Declared {
     return $false
 }
 
-# Every stop in this script ends here. Nothing is attempted after it.
+# Every stop in this script ends here. Nothing is attempted after it. It names what this
+# run already changed: a stop after a push that says nothing changed would be believed.
 function Stop-Now {
     param([string]$Reason, [string[]]$Detail = @())
     Write-Host ''
@@ -237,7 +240,14 @@ function Stop-Now {
         foreach ($line in ($d -split "`n")) { Write-Host ("       {0}" -f $line) }
     }
     Write-Host ''
-    Write-Host 'Nothing was changed. See docs/development/finishing-work.md' -ForegroundColor DarkGray
+    if ($script:Ran.Count -eq 0) {
+        Write-Host 'Nothing was changed.' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host 'Already done in this run, and not undone:' -ForegroundColor Yellow
+        foreach ($r in $script:Ran) { Write-Host ("  {0}" -f $r) }
+    }
+    Write-Host ("See docs/development/finishing-work.md section {0}" -f $script:CurSection) -ForegroundColor DarkGray
     Write-Host ''
     exit 1
 }
@@ -284,8 +294,16 @@ function Invoke-Mutating {
     # `@(0)`, which PowerShell then treats as false. A successful merge read as a
     # conflict. Out-Host writes to the console and puts nothing on the pipeline, so the
     # exit code below is the only thing this function returns.
-    & $Exe @Arguments | Out-Host
-    return $LASTEXITCODE
+    #
+    # 'Continue' in here, and stderr merged and turned back into plain text: when the
+    # caller captures this script's output with 2>&1, Windows PowerShell 5.1 makes every
+    # stderr line of a native command an error record, and under 'Stop' the first one -
+    # git push's "Everything up-to-date" - would end the script. Judged by exit code only.
+    $ErrorActionPreference = 'Continue'
+    & $Exe @Arguments 2>&1 | ForEach-Object { "$_" } | Out-Host
+    $rc = $LASTEXITCODE
+    if ($rc -eq 0) { $script:Ran += ("{0} {1}" -f $Exe, $shown) }
+    return $rc
 }
 
 # Runs a read-only native command whose stderr the call site redirects. Windows
@@ -297,6 +315,25 @@ function Invoke-Quiet {
     param([Parameter(Mandatory)][scriptblock]$Command)
     $ErrorActionPreference = 'Continue'
     & $Command
+}
+
+# A gh call run through Invoke-Quiet with 2>&1 returns stdout lines as strings and stderr
+# lines as error records. These split them apart again.
+function Get-GhOutput {
+    param([object[]]$Lines)
+    @($Lines | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" })
+}
+
+# The first line gh wrote to stderr, unless it only said there is no pull request - which
+# the caller reports in its own words. Anything else is the real reason, such as origin not
+# being a GitHub host, and hiding it would make the stop lie.
+function Get-GhError {
+    param([object[]]$Lines)
+    $first = @($Lines | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -First 1
+    if (-not $first) { return '' }
+    if ($first -match 'no pull requests found|no open pull requests') { return '' }
+    return $first
 }
 
 # Refs and SHAs are validated before they are ever handed to git. No git subcommand or
@@ -704,8 +741,8 @@ gh is not installed, or is installed but not authenticated.
 # install a tool it cannot install and then had to discover the rest of the wall by
 # hitting it. The stop now depends on what this session can do and on which stage needs it.
 #
-# This grants nothing. -Merge and -Cleanup still cannot proceed without a route to GitHub
-# and still stop; what changed is that they stop naming the route that exists here.
+# This grants nothing. -Pr stops short of opening the pull request, and -Merge cannot
+# proceed without a route to GitHub; both name the route that exists here.
 function Assert-GithubRoute {
     if ($script:CapGh -eq 1) { return }
 
@@ -715,23 +752,23 @@ function Assert-GithubRoute {
         return
     }
 
-    # -Pr in a cloud session is worth running rather than refusing. Section 3 and the push
-    # are pure git and work here; what cannot run is the last command of the stage.
-    # Stopping in preflight would throw away the part of this stage that is hardest to do
-    # by hand - the title and the body, where the evidence and the Testing line live - so
-    # the stage proceeds and New-PullRequest hands off where gh would have run.
-    if ($script:Stage -eq 'pr' -and $script:EnvTier -eq 'cloud-agent') {
+    # -Pr without gh is worth running rather than refusing. Section 3 and the push are pure
+    # git and work anywhere; what cannot run is the last command of the stage. Stopping in
+    # preflight would throw away the part of this stage that is hardest to do by hand - the
+    # title and the body, where the evidence and the Testing line live - so the stage
+    # proceeds and New-PullRequest hands off where gh would have run.
+    if ($script:Stage -eq 'pr') {
         Write-Fine ("github        no gh here - {0}" -f $script:EnvLabel)
         Write-Fine 'this stage will update from the base, push, and build the pull request, then'
-        Write-Fine "hand the pull request itself to your agent's GitHub tools"
+        Write-Fine 'hand the pull request itself to you'
         return
     }
 
     # Split on "\r?\n" rather than "`n": .gitattributes checks .ps1 files out CRLF, so the
     # here-string this came from carries carriage returns that would otherwise survive
     # into the middle of the printed lines.
-    if ($script:EnvTier -eq 'cloud-agent') {
-        Stop-Now ("this stage needs a route to GitHub, and gh cannot run in a {0}" -f $script:EnvLabel) `
+    if ($script:EnvTier -eq 'cloud-agent' -or $script:EnvTier -eq 'no-github-remote') {
+        Stop-Now ("this stage needs a route to GitHub, and there is none in a {0}" -f $script:EnvLabel) `
             (@('') + ($script:EnvRoute -split "\r?\n"))
     }
     else {
@@ -740,6 +777,7 @@ function Assert-GithubRoute {
 }
 
 function Invoke-Preflight {
+    $script:CurSection = 1
     Write-Head 'Preflight'
 
     $remotes = @(git remote)
@@ -999,17 +1037,27 @@ function Invoke-SecretScan {
 
 
 function Test-BuildSystem {
-    foreach ($f in @('Cargo.toml', 'package.json', 'Makefile')) {
+    $script:HasBuild = @()
+    foreach ($f in @('Cargo.toml', 'package.json', 'pyproject.toml', 'go.mod', 'pom.xml', 'Makefile')) {
         if (Test-Path -LiteralPath (Join-Path $script:Root $f)) { $script:HasBuild += $f }
+    }
+    # The project's own check command counts when it is a file in the repository, as the
+    # default .\scripts\check.ps1 is: a repository with one has something to run.
+    $first = (($script:CheckCommand -split ' ')[0]) -replace '^\.[\\/]', ''
+    if ($first -and -not [System.IO.Path]::IsPathRooted($first) -and $first -notlike '*..*') {
+        if (Test-Path -LiteralPath (Join-Path $script:Root $first) -PathType Leaf) {
+            $script:HasBuild += ($first -replace '\\', '/')
+        }
     }
     if (Test-Path -LiteralPath (Join-Path $script:Root '.github/workflows')) { $script:HasCi = $true }
 }
 
 function Invoke-FinishedChecks {
+    $script:CurSection = 2
     Write-Head 'Evidence for you to judge - not a verdict'
 
     Write-Plain 'Claim:'
-    foreach ($line in ($script:ClaimBody -split "`n")) { Write-Host ("    {0}" -f $line.TrimEnd()) }
+    foreach ($line in ($script:ClaimBody.TrimEnd() -split "`n")) { Write-Host ("    {0}" -f $line.TrimEnd()) }
     Write-Host ''
 
     Write-Plain 'Files actually changed:'
@@ -1029,6 +1077,9 @@ function Invoke-FinishedChecks {
     Invoke-SecretScan
     if (Get-Command Invoke-ProjectScans -ErrorAction SilentlyContinue) { Invoke-ProjectScans }
     Test-Declarations
+    # The title is built here rather than at section 4, so that a branch name it cannot use
+    # is a finding in the bare report, while there is still time to pass -Title.
+    Build-PrTitle
     Test-BuildSystem
 
     if ($script:HasBuild.Count -eq 0 -and -not $script:HasCi) {
@@ -1082,7 +1133,7 @@ function Test-Acknowledgements {
             '',
             (($unacked | ForEach-Object { "  $_" }) -join "`n"),
             '',
-            ('  .\scripts\finish.ps1 -Pr -Testing "..." -Acknowledge "{0}"' -f ($unacked -join ',')),
+            ('  .\scripts\finish.ps1 -Pr -Testing "{0}" -Acknowledge "{1}"' -f $Testing, ($unacked -join ',')),
             '',
             'What you acknowledge goes into the pull request body, where a reviewer sees it')
     }
@@ -1091,6 +1142,7 @@ function Test-Acknowledgements {
 # --------------------------------------------------- section 3: bring up to date
 
 function Update-FromBase {
+    $script:CurSection = 3
     Write-Head "Bringing the branch up to date with origin/$($script:BaseName)"
 
     # Section 3 opens with `git fetch origin`; preflight already did a wider fetch seconds
@@ -1164,6 +1216,7 @@ function Build-PrTitle {
 
     if (-not $type) {
         Add-Finding 'branch name' "$($script:BranchName) does not start with a type from workflow.conf ($($script:BranchTypes))"
+        Write-Fine ('                   the title will be "{0}" - pass -Title to choose it' -f $outcome)
         $script:PrTitle = $outcome
     } else {
         $script:PrTitle = "${type}: $outcome"
@@ -1200,7 +1253,7 @@ function Build-PrBody {
 
     $lines = @()
     $lines += Format-Field 'Scope:'   $script:ScopeText
-    $lines += Format-Field 'Touches:' ("$touches (+$plus -$minus)")
+    $lines += Format-Field 'Touches:' ("$touches (+$plus -$minus)").Trim()
     $lines += Format-Field 'Testing:' $Testing
     for ($i = 0; $i -lt $noteLines.Count; $i++) {
         $lines += Format-Field $(if ($i -eq 0) { 'Notes:' } else { '' }) $noteLines[$i]
@@ -1211,6 +1264,7 @@ function Build-PrBody {
 }
 
 function New-PullRequest {
+    $script:CurSection = 4
     Write-Head 'Opening the pull request'
 
     # @tsv, not a hand-built "\(.a)`t\(.b)" string: inside single quotes PowerShell does
@@ -1230,7 +1284,7 @@ function New-PullRequest {
             # counts are computed from the branch, so after another commit the old body
             # is quietly wrong - and a stale Touches line is exactly what section 4 says
             # the body exists to get right.
-            Build-PrTitle
+            if (-not $script:PrTitle) { Build-PrTitle }
             [void](Build-PrBody)
             $rc = Invoke-Mutating 'gh' @('pr', 'edit', $script:PrNumber, '--body-file', $script:BodyFile)
             if ($rc -ne 0) { Stop-Now "gh pr edit failed for pull request #$($script:PrNumber)" }
@@ -1243,7 +1297,7 @@ function New-PullRequest {
             'this script will not reopen it')
     }
 
-    Build-PrTitle
+    if (-not $script:PrTitle) { Build-PrTitle }
     $bodyLines = Build-PrBody
 
     Write-Plain ("title  {0}" -f $script:PrTitle)
@@ -1261,10 +1315,14 @@ function New-PullRequest {
             Write-Plain 'Dry run: nothing was pushed, so there is nothing to open yet. Re-run without'
             Write-Plain '-DryRun first. What that would print is:'
         }
-        else {
+        elseif ($script:EnvTier -eq 'cloud-agent') {
             Write-Plain 'The branch is pushed and the body above is what the pull request needs. gh'
             Write-Plain ("cannot run in a {0}, so open it with your agent's GitHub tool instead" -f $script:EnvLabel)
             Write-Plain '(in Claude Code, mcp__github__create_pull_request):'
+        }
+        else {
+            Write-Plain 'The branch is pushed and the body above is what the pull request needs. gh'
+            Write-Plain 'cannot open it from here, so open it by hand with these values:'
         }
         Write-Host ''
         Write-Plain ("    base   {0}" -f $script:BaseName)
@@ -1273,8 +1331,14 @@ function New-PullRequest {
         Write-Plain '    body   the block printed above, verbatim'
         if ($Draft) { Write-Plain '    draft  true' }
         Write-Host ''
-        Write-Plain 'Then merge it with -Merge from a workstation, or with the same tools from here'
-        Write-Plain '(in Claude Code, mcp__github__merge_pull_request with merge_method "squash") -'
+        if ($script:EnvTier -eq 'cloud-agent') {
+            Write-Plain 'Then merge it with -Merge from a workstation, or with the same tools from here'
+            Write-Plain '(in Claude Code, mcp__github__merge_pull_request with merge_method "squash") -'
+        }
+        else {
+            Write-Plain 'Then merge it with -Merge once gh works here, or squash-merge it by hand and'
+            Write-Plain 'retire the branch with -Cleanup -Sha <the squashed commit> -'
+        }
         Write-Plain 'after reading the checks. finishing-work.md section 9 binds either way: never'
         Write-Plain 'merge with checks failing, and never merge a pull request you did not open.'
         Write-Host ''
@@ -1384,13 +1448,20 @@ function Resolve-CheckState {
 }
 
 function Merge-PullRequest {
+    $script:CurSection = 5
     Write-Head 'Merging'
 
     # One call, one line back, tab separated. gh embeds its own jq, so nothing extra
     # needs to be installed and no JSON is parsed by hand here.
     $jq = '[.number, .state, (.isDraft|tostring), .author.login, .baseRefName, .headRefOid, .mergeable, .mergeStateStatus, .url, .title] | @tsv'
-    $line = (Invoke-Quiet { gh pr view $script:BranchName --json number,state,isDraft,author,baseRefName,headRefOid,mergeable,mergeStateStatus,url,title --jq $jq 2>$null }) | Select-Object -First 1
-    if ($LASTEXITCODE -ne 0 -or -not $line) {
+    $out = @(Invoke-Quiet { gh pr view $script:BranchName --json number,state,isDraft,author,baseRefName,headRefOid,mergeable,mergeStateStatus,url,title --jq $jq 2>&1 })
+    $rc = $LASTEXITCODE
+    $line = Get-GhOutput $out | Select-Object -First 1
+    if ($rc -ne 0 -or -not $line) {
+        $ghSaid = Get-GhError $out
+        if ($ghSaid) {
+            Stop-Now 'gh could not read the pull request for this branch' @("gh said: $ghSaid")
+        }
         Stop-Now 'there is no pull request for this branch' @(
             'open one first:  .\scripts\finish.ps1 -Pr -Testing "..."')
     }
@@ -1496,22 +1567,6 @@ function Merge-PullRequest {
     }
 
     Confirm-Landed $script:SquashSha
-
-    # Ask before deleting. With "Automatically delete head branches" enabled on the
-    # repository GitHub has already retired the branch by the time the merge returns, and
-    # firing a delete at a ref that is not there prints a failure for a step that
-    # succeeded. Reading first makes the normal case quiet and leaves the delete for the
-    # case that still needs it - a repository with the setting off.
-    $stillThere = @(Invoke-Quiet { git ls-remote --heads origin $script:BranchName 2>$null })
-    if ($stillThere.Count -gt 0) {
-        $rc = Invoke-Mutating 'git' @('push', 'origin', '--delete', $script:BranchName)
-        if ($rc -eq 0) { $script:CleanupNotes += 'remote branch deleted' }
-        else { Write-Fine 'remote branch was already gone'; $script:CleanupNotes += 'remote branch already gone' }
-    }
-    else {
-        Write-Fine 'remote branch already gone - GitHub deleted it on merge'
-        $script:CleanupNotes += 'remote branch already gone (deleted by GitHub on merge)'
-    }
 }
 
 # ------------------------------------------------------------ section 6: clean up
@@ -1533,11 +1588,16 @@ function Confirm-Landed {
     foreach ($l in @(git log --oneline -3 "origin/$($script:BaseName)")) { Write-Host ("    {0}" -f $l) }
 }
 
+$script:SimulatedSwitch = $false
+
 function Remove-WorktreeFor {
     param([string]$BranchRef)
 
     $wt = Get-WorktreeForBranch $BranchRef
     if (-not $wt) { return $true }
+    # After a real switch the primary checkout no longer has the branch, so this is only
+    # reached under -DryRun, and the primary checkout is never a worktree to remove.
+    if ($script:SimulatedSwitch -and $wt -eq $script:Primary) { return $true }
 
     $lock = Get-LockReasonFor $wt
     if ($lock) {
@@ -1583,6 +1643,7 @@ function Remove-WorktreeFor {
 function Update-LocalBase {
     $x = (git -C $script:Primary symbolic-ref -q --short HEAD) | Select-Object -First 1
     if ($LASTEXITCODE -ne 0 -or -not $x) { $x = '(detached)' }
+    if ($script:SimulatedSwitch) { $x = $script:BaseName }
     $dirty = @(git -C $script:Primary status --porcelain)
 
     if ($x -eq $script:BaseName) {
@@ -1622,7 +1683,34 @@ function Remove-LocalBranch {
     [void](Invoke-Mutating 'git' @('-C', $script:Primary, 'worktree', 'prune'))
 }
 
+# The remote branch is the claim that starting-new-work.md section 2 reads, so deleting it
+# is what retires the claim. Only ever called after Confirm-Landed.
+function Remove-RemoteBranch {
+    param([string]$BranchRef)
+    if ($script:CapRemoteBranchDel -eq 0) {
+        Write-Fine 'remote branch left - this session cannot delete it (see env-capabilities)'
+        $script:CleanupNotes += 'remote branch left (no route to delete it here)'
+        return
+    }
+    # Ask before deleting. With "Automatically delete head branches" enabled on the
+    # repository GitHub has already retired the branch by the time the merge returns, and
+    # firing a delete at a ref that is not there prints a failure for a step that succeeded.
+    $stillThere = @(Invoke-Quiet { git ls-remote --heads origin $BranchRef 2>$null })
+    if ($stillThere.Count -eq 0) {
+        Write-Fine 'remote branch already gone'
+        $script:CleanupNotes += 'remote branch already gone'
+        return
+    }
+    $rc = Invoke-Mutating 'git' @('push', 'origin', '--delete', $BranchRef)
+    if ($rc -eq 0) { $script:CleanupNotes += 'remote branch deleted' }
+    else {
+        Write-Fine "remote branch $BranchRef could not be deleted - it still reads as a claim"
+        $script:CleanupNotes += 'remote branch NOT deleted'
+    }
+}
+
 function Invoke-Cleanup {
+    $script:CurSection = 6
     Write-Head 'Cleaning up'
 
     # $target, not $branch: case-insensitive names mean a local $branch would be the
@@ -1639,8 +1727,12 @@ function Invoke-Cleanup {
         }
         $rc = Invoke-Mutating 'git' @('-C', $script:Primary, 'switch', $script:BaseName)
         if ($rc -ne 0) { Stop-Now "could not switch the primary checkout to $($script:BaseName)" }
+        # A dry run printed the switch without making it. Plan the rest as the real run
+        # will find things after it, rather than planning to remove the primary checkout.
+        if ($DryRun) { $script:SimulatedSwitch = $true }
     }
 
+    Remove-RemoteBranch $target
     [void](Remove-WorktreeFor $target)
     Update-LocalBase
     Remove-LocalBranch $target
@@ -1703,7 +1795,9 @@ try {
             Write-Host "not a valid branch name: $($script:BranchName)" -ForegroundColor Red
             exit 2
         }
+        $script:CurSection = 6
         Resolve-Base
+        Import-Capabilities
 
         Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
         Invoke-Quiet { git fetch --all --prune *> $null }
@@ -1712,16 +1806,20 @@ try {
         # $landed, not $sha: case-insensitive names mean a local $sha would be the $Sha
         # parameter itself.
         $landed = $Sha
-        if (-not $landed) {
-            $landed = (Invoke-Quiet { gh pr view $script:BranchName --json mergeCommit --jq '.mergeCommit.oid' 2>$null }) | Select-Object -First 1
+        $ghSaid = ''
+        if (-not $landed -and $script:CapGh -eq 1) {
+            $out = @(Invoke-Quiet { gh pr view $script:BranchName --json mergeCommit --jq '.mergeCommit.oid' 2>&1 })
+            $landed = Get-GhOutput $out | Select-Object -First 1
+            $ghSaid = Get-GhError $out
         }
         if (-not $landed -or $landed -eq 'null') {
-            Stop-Now 'cannot confirm this branch was merged' @(
-                'there is no pull request for it with a merge commit, and no -Sha was given.',
+            $why = @('there is no pull request for it with a merge commit, and no -Sha was given.')
+            if ($ghSaid) { $why += "gh said: $ghSaid" }
+            Stop-Now 'cannot confirm this branch was merged' ($why + @(
                 'Nothing has been deleted and nothing will be: section 9 does not allow deleting a',
                 'branch until the log has confirmed the work landed.',
                 '',
-                'If you know the squashed commit, name it:  -Sha <commit>')
+                'If you know the squashed commit, name it:  -Sha <commit>'))
         }
         if (-not (Test-SafeRef $landed)) {
             Write-Host "not a valid commit: $landed" -ForegroundColor Red
@@ -1763,7 +1861,14 @@ try {
     if ($script:Stage -eq 'report') {
         Write-Host ''
         Write-Plain 'Next, when you have read the above and you are satisfied:'
-        Write-Host '  .\scripts\finish.ps1 -Pr -Testing "<what you actually ran>"' -ForegroundColor White
+        if ($script:Flagged.Count -gt 0) {
+            Write-Host ('  .\scripts\finish.ps1 -Pr -Testing "<what you actually ran>" -Acknowledge "{0}"' -f `
+                (@($script:Flagged | Select-Object -Unique) -join ',')) -ForegroundColor White
+            Write-Fine '-Acknowledge names the flagged paths above - only the ones you have looked at'
+        }
+        else {
+            Write-Host '  .\scripts\finish.ps1 -Pr -Testing "<what you actually ran>"' -ForegroundColor White
+        }
         Write-Fine 'add -Notes "..." if a reader would otherwise have to reconstruct something'
         Write-Fine 'add -Draft to open it visible but not landable'
         Write-Host ''

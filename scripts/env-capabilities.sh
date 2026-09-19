@@ -70,19 +70,46 @@ env_cap_platform() {
 
 ENV_PLATFORM=$(env_cap_platform)
 
+# The host part of a remote URL: https://host/..., ssh://user@host:port/..., user@host:path.
+# Empty for a local path, which no gh can open a pull request against.
+env_cap_host_of() {
+  local url="$1"
+  case "$url" in
+    *://*) url="${url#*://}"; url="${url#*@}"; printf '%s' "${url%%[/:]*}" ;;
+    *@*:*) url="${url#*@}"; printf '%s' "${url%%:*}" ;;
+    *)     printf '' ;;
+  esac
+}
+
+ENV_ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
+ENV_ORIGIN_HOST=$(env_cap_host_of "$ENV_ORIGIN_URL")
+
 # CAP_GH is the only capability established by trying the tool rather than by inference.
 # `gh auth status` is a network call; it is the same call preflight already made, so this
 # costs nothing that was not already being spent.
-if env_cap_have gh && gh auth status >/dev/null 2>&1; then
-  CAP_GH=1
-else
-  CAP_GH=0
+#
+# gh that works is not enough: it has to work against origin. A gh logged in to github.com
+# cannot open a pull request on a remote hosted anywhere else, and saying "no pull request
+# for this branch" there would name the wrong cause. Outside a repository there is no
+# origin to ask about, and gh working is the whole answer.
+CAP_GH=0
+ENV_ORIGIN_NOT_GITHUB=0
+if env_cap_have gh; then
+  if [ -z "$ENV_ORIGIN_URL" ]; then
+    gh auth status >/dev/null 2>&1 && CAP_GH=1
+  elif [ -n "$ENV_ORIGIN_HOST" ] && gh auth status --hostname "$ENV_ORIGIN_HOST" >/dev/null 2>&1; then
+    CAP_GH=1
+  elif gh auth status >/dev/null 2>&1; then
+    ENV_ORIGIN_NOT_GITHUB=1
+  fi
 fi
 
 if [ "$CAP_GH" -eq 1 ]; then
   ENV_TIER='workstation'
 elif env_cap_is_cloud_session; then
   ENV_TIER='cloud-agent'
+elif [ "$ENV_ORIGIN_NOT_GITHUB" -eq 1 ]; then
+  ENV_TIER='no-github-remote'
 else
   ENV_TIER='workstation-incomplete'
 fi
@@ -136,6 +163,24 @@ deletes it on merge and no one needs to. Confirm it is gone with:
 
 and if it is still there, say so rather than retrying - it will not succeed.'
     ;;
+  no-github-remote)
+    CAP_GITHUB_ROUTE='none'
+    CAP_REMOTE_BRANCH_DEL=1
+    ENV_LABEL='repository whose origin gh cannot reach'
+    ENV_ROUTE="gh works, but origin is not on a GitHub host it is logged in to:
+
+  origin      ${ENV_ORIGIN_URL}
+
+so there is no pull request to open or merge from here. Everything this script
+does with git still works. If origin is on a GitHub Enterprise host, log in to it:
+
+  gh auth login --hostname <host>
+
+Otherwise land the branch through whatever review this remote's host provides,
+never by pushing to the base branch, then retire it with:
+
+  ./scripts/finish.sh --cleanup --sha <the squashed commit>"
+    ;;
   *)
     CAP_GITHUB_ROUTE='none'
     CAP_REMOTE_BRANCH_DEL=1
@@ -156,7 +201,11 @@ env_capabilities_report() {
   echo "pull requests $(case "$CAP_GITHUB_ROUTE" in
                           gh)  echo 'gh' ;;
                           mcp) echo 'GitHub MCP tools - gh is not usable here' ;;
-                          *)   echo 'no route - gh is missing or unauthenticated' ;;
+                          *)   if [ "$ENV_TIER" = 'no-github-remote' ]; then
+                                 echo 'no route - origin is not a GitHub host gh is logged in to'
+                               else
+                                 echo 'no route - gh is missing or unauthenticated'
+                               fi ;;
                         esac)"
   echo "branch delete $([ "$CAP_REMOTE_BRANCH_DEL" -eq 1 ] \
                           && echo 'remote and local' \
@@ -174,6 +223,7 @@ env_capabilities_export() {
   echo "CAP_GH=$CAP_GH"
   echo "CAP_GITHUB_ROUTE=$CAP_GITHUB_ROUTE"
   echo "CAP_REMOTE_BRANCH_DEL=$CAP_REMOTE_BRANCH_DEL"
+  echo "ENV_ORIGIN_HOST=$ENV_ORIGIN_HOST"
 }
 
 # Sourced or executed? ${BASH_SOURCE[0]} is this file either way; $0 is the caller's name

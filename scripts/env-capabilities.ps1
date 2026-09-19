@@ -70,18 +70,51 @@ function Get-EnvPlatform {
 
 $EnvPlatform = Get-EnvPlatform
 
-# The only capability established by trying the tool rather than by inference.
-$CapGh = 0
-if (Get-Command gh -ErrorAction SilentlyContinue) {
-    # Scoped to 'Continue': finish.ps1 dot-sources this under 'Stop', where Windows
-    # PowerShell 5.1 ends the script on the redirected stderr of an unauthenticated gh.
-    & { $ErrorActionPreference = 'Continue'; gh auth status *> $null }
-    if ($LASTEXITCODE -eq 0) { $CapGh = 1 }
+# The host part of a remote URL: https://host/..., ssh://user@host:port/..., user@host:path.
+# Empty for a local path, which no gh can open a pull request against.
+function Get-HostOf {
+    param([string]$Url)
+    if ($Url -match '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?([^/:]+)') { return $Matches[1] }
+    if ($Url -match '^[^@/\\]+@([^:/\\]+):') { return $Matches[1] }
+    return ''
 }
 
-if ($CapGh -eq 1)         { $EnvTier = 'workstation' }
-elseif (Test-CloudSession) { $EnvTier = 'cloud-agent' }
-else                       { $EnvTier = 'workstation-incomplete' }
+# Scoped to 'Continue': finish.ps1 dot-sources this under 'Stop', where Windows
+# PowerShell 5.1 ends the script on the redirected stderr of a failing native command.
+$EnvOriginUrl = & { $ErrorActionPreference = 'Continue'; git remote get-url origin 2>$null }
+if ($LASTEXITCODE -ne 0 -or -not $EnvOriginUrl) { $EnvOriginUrl = '' }
+$EnvOriginUrl  = [string]($EnvOriginUrl | Select-Object -First 1)
+$EnvOriginHost = Get-HostOf $EnvOriginUrl
+
+# The only capability established by trying the tool rather than by inference.
+#
+# gh that works is not enough: it has to work against origin. A gh logged in to github.com
+# cannot open a pull request on a remote hosted anywhere else, and saying "no pull request
+# for this branch" there would name the wrong cause. Outside a repository there is no
+# origin to ask about, and gh working is the whole answer.
+$CapGh = 0
+$EnvOriginNotGithub = 0
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+    if (-not $EnvOriginUrl) {
+        & { $ErrorActionPreference = 'Continue'; gh auth status *> $null }
+        if ($LASTEXITCODE -eq 0) { $CapGh = 1 }
+    }
+    else {
+        if ($EnvOriginHost) {
+            & { $ErrorActionPreference = 'Continue'; gh auth status --hostname $EnvOriginHost *> $null }
+            if ($LASTEXITCODE -eq 0) { $CapGh = 1 }
+        }
+        if ($CapGh -eq 0) {
+            & { $ErrorActionPreference = 'Continue'; gh auth status *> $null }
+            if ($LASTEXITCODE -eq 0) { $EnvOriginNotGithub = 1 }
+        }
+    }
+}
+
+if ($CapGh -eq 1)                   { $EnvTier = 'workstation' }
+elseif (Test-CloudSession)           { $EnvTier = 'cloud-agent' }
+elseif ($EnvOriginNotGithub -eq 1)   { $EnvTier = 'no-github-remote' }
+else                                 { $EnvTier = 'workstation-incomplete' }
 
 # CapRemoteBranchDelete is 0 in a cloud session as a matter of fact, not of policy. The
 # egress proxy answers `git push origin --delete` with HTTP 403, the GitHub REST API is not
@@ -129,6 +162,26 @@ deletes it on merge and no one needs to. Confirm it is gone with:
 and if it is still there, say so rather than retrying - it will not succeed.
 '@
     }
+    'no-github-remote' {
+        $CapGithubRoute = 'none'
+        $CapRemoteBranchDelete = 1
+        $EnvLabel = 'repository whose origin gh cannot reach'
+        $EnvRoute = @"
+gh works, but origin is not on a GitHub host it is logged in to:
+
+  origin      $EnvOriginUrl
+
+so there is no pull request to open or merge from here. Everything this script
+does with git still works. If origin is on a GitHub Enterprise host, log in to it:
+
+  gh auth login --hostname <host>
+
+Otherwise land the branch through whatever review this remote's host provides,
+never by pushing to the base branch, then retire it with:
+
+  .\scripts\finish.ps1 -Cleanup -Sha <the squashed commit>
+"@
+    }
     default {
         $CapGithubRoute = 'none'
         $CapRemoteBranchDelete = 1
@@ -146,7 +199,10 @@ function Write-EnvCapabilitiesReport {
     $prs = switch ($CapGithubRoute) {
         'gh'  { 'gh' }
         'mcp' { 'GitHub MCP tools - gh is not usable here' }
-        default { 'no route - gh is missing or unauthenticated' }
+        default {
+            if ($EnvTier -eq 'no-github-remote') { 'no route - origin is not a GitHub host gh is logged in to' }
+            else { 'no route - gh is missing or unauthenticated' }
+        }
     }
     $del = if ($CapRemoteBranchDelete -eq 1) { 'remote and local' }
            else { "local only - the remote branch is GitHub's to delete on merge" }
@@ -172,6 +228,7 @@ function Write-EnvCapabilitiesExport {
     Write-Output "CAP_GH=$CapGh"
     Write-Output "CAP_GITHUB_ROUTE=$CapGithubRoute"
     Write-Output "CAP_REMOTE_BRANCH_DEL=$CapRemoteBranchDelete"
+    Write-Output "ENV_ORIGIN_HOST=$EnvOriginHost"
 }
 
 # Dot-sourced or invoked? $MyInvocation.InvocationName is '.' when dot-sourced. Only the

@@ -174,6 +174,8 @@ NOTES_EXTRA=''    # newline separated, appended to the Notes: field of the pull 
 DECLARED=''       # newline separated names given with --declare
 DECLARED_ASKED='' # newline separated names a scan asked is_declared about this run
 DECLARED_USED=''  # comma separated names a scan asked about and found declared
+RAN=''            # newline separated, every state-changing command run() completed
+CUR_SECTION=1     # cites finishing-work.md section 1 to 6 by number, one per stage
 
 add_flagged() { FLAGGED="${FLAGGED}${FLAGGED:+$'\n'}$1"; }
 add_cleanup() { CLEANUP_NOTES="${CLEANUP_NOTES}${CLEANUP_NOTES:+, }$1"; }
@@ -202,14 +204,22 @@ finding() {
   printf '  %s%-18s%s %s\n' "$YELLOW" "$1" "$RESET" "$2"
 }
 
-# Every stop in this script ends here. Nothing is attempted after it.
+# Every stop in this script ends here. Nothing is attempted after it. It names what this
+# run already changed: a stop after a push that says nothing changed would be believed.
 stop() {
   printf '\n%sStop: %s%s\n' "$RED" "$1" "$RESET" >&2
   shift
   # Indent every line of every argument, not just the first: several call sites pass a
   # captured multi-line list and the continuations have to line up with it.
   while [ $# -gt 0 ]; do printf '%s\n' "$1" | sed 's/^/       /' >&2; shift; done
-  printf '\n%sNothing was changed. See docs/development/finishing-work.md%s\n\n' "$DIM" "$RESET" >&2
+  echo '' >&2
+  if [ -z "$RAN" ]; then
+    printf '%sNothing was changed.%s\n' "$DIM" "$RESET" >&2
+  else
+    printf '%sAlready done in this run, and not undone:%s\n' "$YELLOW" "$RESET" >&2
+    printf '%s\n' "$RAN" | sed 's/^/  /' >&2
+  fi
+  printf '%sSee docs/development/finishing-work.md section %s%s\n\n' "$DIM" "$CUR_SECTION" "$RESET" >&2
   exit 1
 }
 
@@ -360,8 +370,8 @@ load_capabilities() {
 # and says what it could not show - a session that cannot open a pull request can still get
 # the whole of sections 1 and 2, which is the part that carries the judgement.
 #
-# This grants nothing. --pr and --merge still cannot proceed without a route to GitHub and
-# still stop; what changed is that they stop naming the route that exists here.
+# This grants nothing. --pr stops short of opening the pull request, and --merge cannot
+# proceed without a route to GitHub; both name the route that exists here.
 require_github_route() {
   [ "$CAP_GH" -eq 1 ] && return 0
 
@@ -371,22 +381,22 @@ require_github_route() {
     return 0
   fi
 
-  # --pr in a cloud session is worth running rather than refusing. Sections 3 and the push
-  # are pure git and work here; what cannot run is the last command of the stage. Stopping
-  # in preflight would throw away the part of this stage that is hardest to do by hand -
-  # the title and the body, which are where the evidence and the Testing line live - so the
+  # --pr without gh is worth running rather than refusing. Section 3 and the push are pure
+  # git and work anywhere; what cannot run is the last command of the stage. Stopping in
+  # preflight would throw away the part of this stage that is hardest to do by hand - the
+  # title and the body, which are where the evidence and the Testing line live - so the
   # stage proceeds and open_pull_request hands off at the point where gh would have run.
-  if [ "$STAGE" = 'pr' ] && [ "$ENV_TIER" = 'cloud-agent' ]; then
+  if [ "$STAGE" = 'pr' ]; then
     fine "github        no gh here - $ENV_LABEL"
     fine 'this stage will update from the base, push, and build the pull request, then'
-    fine "hand the pull request itself to your agent's GitHub tools"
+    fine 'hand the pull request itself to you'
     return 0
   fi
 
   case "$ENV_TIER" in
-    cloud-agent)
+    cloud-agent|no-github-remote)
       stop \
-        "this stage needs a route to GitHub, and gh cannot run in a $ENV_LABEL" \
+        "this stage needs a route to GitHub, and there is none in a $ENV_LABEL" \
         '' \
         "$ENV_ROUTE"
       ;;
@@ -423,7 +433,10 @@ run() {
     return 0
   fi
   printf '  %s+ %s%s\n' "$DIM" "$shown" "$RESET"
-  "$@"
+  local rc=0
+  "$@" || rc=$?
+  [ "$rc" -eq 0 ] && RAN="${RAN}${RAN:+$'\n'}$shown"
+  return "$rc"
 }
 
 # Refs and SHAs are validated before they are ever handed to git. No git subcommand or
@@ -449,8 +462,26 @@ safe_title() {
 
 BODY_FILE=''
 SQUASH_FILE=''
-cleanup_temp() { [ -n "$BODY_FILE" ] && rm -f "$BODY_FILE"; [ -n "$SQUASH_FILE" ] && rm -f "$SQUASH_FILE"; return 0; }
+ERR_FILE=$(mktemp)
+cleanup_temp() {
+  [ -n "$BODY_FILE" ] && rm -f "$BODY_FILE"
+  [ -n "$SQUASH_FILE" ] && rm -f "$SQUASH_FILE"
+  rm -f "$ERR_FILE"
+  return 0
+}
 trap cleanup_temp EXIT
+
+# The first line gh wrote to stderr on its last call, unless it only said there is no pull
+# request - which the caller reports in its own words. Anything else is the real reason,
+# such as origin not being a GitHub host, and hiding it would make the stop lie.
+gh_error() {
+  local line
+  line=$(grep -v '^[[:space:]]*$' "$ERR_FILE" 2>/dev/null | head -1 || true)
+  case "$line" in
+    *'no pull requests found'*|*'no open pull requests'*) line='' ;;
+  esac
+  printf '%s' "$line"
+}
 
 # --------------------------------------------------------------------------- context
 
@@ -682,6 +713,7 @@ claim_field() {
 }
 
 preflight() {
+  CUR_SECTION=1
   section 'Preflight'
 
   git remote | grep -qx origin || stop \
@@ -948,14 +980,24 @@ scan_secrets() {
 
 probe_build_system() {
   local f
-  for f in Cargo.toml package.json Makefile; do
+  HAS_BUILD=''
+  for f in Cargo.toml package.json pyproject.toml go.mod pom.xml Makefile; do
     [ -e "$ROOT/$f" ] && HAS_BUILD="${HAS_BUILD}${HAS_BUILD:+, }$f"
   done
+  # The project's own check command counts when it is a file in the repository, as the
+  # default ./scripts/check.sh is: a repository with one has something to run.
+  f="${CHECK_COMMAND%% *}"
+  f="${f#./}"
+  case "$f" in
+    ''|/*|*..*) : ;;
+    *) [ -f "$ROOT/$f" ] && HAS_BUILD="${HAS_BUILD}${HAS_BUILD:+, }$f" ;;
+  esac
   [ -d "$ROOT/.github/workflows" ] && HAS_CI=1
   return 0
 }
 
 finished_checks() {
+  CUR_SECTION=2
   local found=''
 
   section 'Evidence for you to judge - not a verdict'
@@ -983,6 +1025,9 @@ finished_checks() {
     project_scans
   fi
   check_declarations
+  # The title is built here rather than at section 4, so that a branch name it cannot use
+  # is a finding in the bare report, while there is still time to pass --title.
+  build_title
   probe_build_system
 
   if [ -z "$HAS_BUILD" ] && [ "$HAS_CI" -eq 0 ]; then
@@ -1054,7 +1099,7 @@ EOF
       '' \
       "$(printf '%s\n' "$unacked" | sed 's/^/  /')" \
       '' \
-      "  ./scripts/finish.sh --pr --testing \"...\" --acknowledge \"$(printf '%s' "$unacked" | tr '\n' ',' | sed 's/,$//')\"" \
+      "  ./scripts/finish.sh --pr --testing \"$TESTING\" --acknowledge \"$(printf '%s' "$unacked" | tr '\n' ',' | sed 's/,$//')\"" \
       '' \
       'What you acknowledge goes into the pull request body, where a reviewer sees it'
   fi
@@ -1065,6 +1110,7 @@ EOF
 # --------------------------------------------------- section 3: bring up to date
 
 update_from_base() {
+  CUR_SECTION=3
   section "Bringing the branch up to date with origin/$BASE"
 
   # Section 3 opens with `git fetch origin`; preflight already did a wider fetch seconds
@@ -1144,6 +1190,7 @@ build_title() {
   outcome="${CLAIM_SUBJECT#claim: }"
   if [ -z "$type" ]; then
     finding 'branch name' "$BRANCH does not start with a type from workflow.conf ($BRANCH_TYPES)"
+    fine "                   the title will be \"$outcome\" - pass --title to choose it"
     PR_TITLE="$outcome"
   else
     PR_TITLE="$type: $outcome"
@@ -1181,7 +1228,7 @@ build_pr_body() {
   BODY_FILE=$(mktemp)
   {
     field 'Scope:'   "$SCOPE"
-    field 'Touches:' "${touches} (+${plus:-0} -${minus:-0})"
+    field 'Touches:' "${touches:+$touches }(+${plus:-0} -${minus:-0})"
     field 'Testing:' "$TESTING"
     local line first=1
     while IFS= read -r line; do
@@ -1194,6 +1241,7 @@ EOF
 }
 
 open_pull_request() {
+  CUR_SECTION=4
   section 'Opening the pull request'
 
   local existing st
@@ -1208,7 +1256,7 @@ EOF
       # are computed from the branch, so after another commit the old body is quietly
       # wrong - and a stale Touches line is exactly what section 4 says the body exists
       # to get right.
-      build_title
+      [ -n "$PR_TITLE" ] || build_title
       build_pr_body
       run gh pr edit "$PR_NUMBER" --body-file "$BODY_FILE" || stop \
         "gh pr edit failed for pull request #$PR_NUMBER"
@@ -1222,7 +1270,7 @@ EOF
       'this script will not reopen it'
   fi
 
-  build_title
+  [ -n "$PR_TITLE" ] || build_title
   build_pr_body
 
   plain "title  $PR_TITLE"
@@ -1239,10 +1287,13 @@ EOF
     if [ "$DRYRUN" -eq 1 ]; then
       plain 'Dry run: nothing was pushed, so there is nothing to open yet. Re-run without'
       plain '--dry-run first. What that would print is:'
-    else
+    elif [ "$ENV_TIER" = 'cloud-agent' ]; then
       plain 'The branch is pushed and the body above is what the pull request needs. gh'
       plain "cannot run in a $ENV_LABEL, so open it with your agent's GitHub tool instead"
       plain '(in Claude Code, mcp__github__create_pull_request):'
+    else
+      plain 'The branch is pushed and the body above is what the pull request needs. gh'
+      plain 'cannot open it from here, so open it by hand with these values:'
     fi
     echo ''
     plain "    base   $BASE"
@@ -1251,8 +1302,13 @@ EOF
     plain "    body   the block printed above, verbatim"
     [ "$DRAFT" -eq 1 ] && plain '    draft  true'
     echo ''
-    plain 'Then merge it with --merge from a workstation, or with the same tools from here'
-    plain '(in Claude Code, mcp__github__merge_pull_request with merge_method "squash") -'
+    if [ "$ENV_TIER" = 'cloud-agent' ]; then
+      plain 'Then merge it with --merge from a workstation, or with the same tools from here'
+      plain '(in Claude Code, mcp__github__merge_pull_request with merge_method "squash") -'
+    else
+      plain 'Then merge it with --merge once gh works here, or squash-merge it by hand and'
+      plain 'retire the branch with --cleanup --sha <the squashed commit> -'
+    fi
     plain 'after reading the checks. finishing-work.md section 9 binds either way: never'
     plain 'merge with checks failing, and never merge a pull request you did not open.'
     echo ''
@@ -1341,6 +1397,7 @@ resolve_check_state() {
 SQUASH_SHA=''
 
 merge_pull_request() {
+  CUR_SECTION=5
   section 'Merging'
 
   # One call, one line back, tab separated. gh embeds its own jq, so nothing extra needs
@@ -1349,10 +1406,17 @@ merge_pull_request() {
   json=$(gh pr view "$BRANCH" \
     --json number,state,isDraft,author,baseRefName,headRefOid,mergeable,mergeStateStatus,url,title \
     --jq '[.number, .state, (.isDraft|tostring), .author.login, .baseRefName, .headRefOid,
-           .mergeable, .mergeStateStatus, .url, .title] | @tsv' 2>/dev/null || true)
-  [ -n "$json" ] || stop \
-    'there is no pull request for this branch' \
-    'open one first:  ./scripts/finish.sh --pr --testing "..."'
+           .mergeable, .mergeStateStatus, .url, .title] | @tsv' 2>"$ERR_FILE" || true)
+  if [ -z "$json" ]; then
+    local gh_said
+    gh_said=$(gh_error)
+    [ -z "$gh_said" ] || stop \
+      'gh could not read the pull request for this branch' \
+      "gh said: $gh_said"
+    stop \
+      'there is no pull request for this branch' \
+      'open one first:  ./scripts/finish.sh --pr --testing "..."'
+  fi
 
   local state isdraft author baseref headoid mergeable mergestate
   IFS=$'\t' read -r PR_NUMBER state isdraft author baseref headoid mergeable mergestate PR_URL PR_TITLE <<EOF
@@ -1443,18 +1507,6 @@ EOF
     'nothing has been deleted. Confirm by hand before removing anything'
 
   confirm_landed "$SQUASH_SHA"
-
-  # Ask before deleting. With "Automatically delete head branches" enabled on the
-  # repository GitHub has already retired the branch by the time the merge returns, and
-  # firing a delete at a ref that is not there prints a failure for a step that succeeded.
-  # Reading first makes the normal case quiet and leaves the delete for the case that
-  # still needs it - a repository with the setting off.
-  if [ -n "$(git ls-remote --heads origin "$BRANCH" 2>/dev/null)" ]; then
-    run git push origin --delete "$BRANCH" || fine 'remote branch was already gone'
-  else
-    fine 'remote branch already gone - GitHub deleted it on merge'
-  fi
-  add_cleanup 'remote branch deleted'
 }
 
 # ------------------------------------------------------------ section 6: clean up
@@ -1472,10 +1524,15 @@ confirm_landed() {
   git log --oneline -3 "origin/$BASE" | sed 's/^/    /'
 }
 
+SIMULATED_SWITCH=0
+
 remove_worktree_for() {
   local branch="$1" wt lock
   wt=$(worktree_for_branch "$branch")
   [ -n "$wt" ] || return 0
+  # After a real switch the primary checkout no longer has the branch, so this is only
+  # reached under --dry-run, and the primary checkout is never a worktree to remove.
+  [ "$SIMULATED_SWITCH" -eq 1 ] && [ "$wt" = "$PRIMARY" ] && return 0
 
   lock=$(lock_reason_for "$wt")
   if [ -n "$lock" ]; then
@@ -1515,6 +1572,7 @@ remove_worktree_for() {
 update_local_base() {
   local x dirty
   x=$(git -C "$PRIMARY" symbolic-ref -q --short HEAD 2>/dev/null || echo '(detached)')
+  [ "$SIMULATED_SWITCH" -eq 1 ] && x="$BASE"
   dirty=$(git -C "$PRIMARY" status --porcelain 2>/dev/null || true)
 
   if [ "$x" = "$BASE" ]; then
@@ -1555,7 +1613,33 @@ delete_local_branch() {
   run git -C "$PRIMARY" worktree prune || true
 }
 
+# The remote branch is the claim that starting-new-work.md section 2 reads, so deleting
+# it is what retires the claim. Only ever called after confirm_landed.
+delete_remote_branch() {
+  local branch="$1"
+  if [ "$CAP_REMOTE_BRANCH_DEL" -eq 0 ]; then
+    fine 'remote branch left - this session cannot delete it (see env-capabilities)'
+    add_cleanup 'remote branch left (no route to delete it here)'
+    return 0
+  fi
+  # Ask before deleting. With "Automatically delete head branches" enabled on the
+  # repository GitHub has already retired the branch by the time the merge returns, and
+  # firing a delete at a ref that is not there prints a failure for a step that succeeded.
+  if [ -z "$(git ls-remote --heads origin "$branch" 2>/dev/null)" ]; then
+    fine 'remote branch already gone'
+    add_cleanup 'remote branch already gone'
+    return 0
+  fi
+  if run git push origin --delete "$branch"; then
+    add_cleanup 'remote branch deleted'
+  else
+    fine "remote branch $branch could not be deleted - it still reads as a claim"
+    add_cleanup 'remote branch NOT deleted'
+  fi
+}
+
 do_cleanup() {
+  CUR_SECTION=6
   section 'Cleaning up'
 
   local branch="${BRANCH_ARG:-$BRANCH}"
@@ -1570,8 +1654,12 @@ do_cleanup() {
         'stash or discard anything to make that possible. Decide what those changes are for'
     fi
     run git -C "$PRIMARY" switch "$BASE" || stop "could not switch the primary checkout to $BASE"
+    # A dry run printed the switch without making it. Plan the rest as the real run will
+    # find things after it, rather than planning to remove the primary checkout.
+    [ "$DRYRUN" -eq 1 ] && SIMULATED_SWITCH=1
   fi
 
+  delete_remote_branch "$branch"
   remove_worktree_for "$branch" || true
   update_local_base
   delete_local_branch "$branch"
@@ -1624,19 +1712,23 @@ main() {
     [ -n "$BRANCH_ARG" ] && BRANCH="$BRANCH_ARG"
     [ -n "$BRANCH" ] || stop '--cleanup needs a branch: pass --branch <name>'
     safe_ref "$BRANCH" || { echo "not a valid branch name: $BRANCH" >&2; exit 2; }
+    CUR_SECTION=6
     resolve_base
+    load_capabilities
 
     printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
     git fetch --all --prune >/dev/null 2>&1 || stop 'git fetch failed'
 
-    local sha="$SHA_ARG"
-    if [ -z "$sha" ]; then
-      sha=$(gh pr view "$BRANCH" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || true)
+    local sha="$SHA_ARG" gh_said=''
+    if [ -z "$sha" ] && [ "$CAP_GH" -eq 1 ]; then
+      sha=$(gh pr view "$BRANCH" --json mergeCommit --jq '.mergeCommit.oid' 2>"$ERR_FILE" || true)
+      gh_said=$(gh_error)
     fi
     if [ -z "$sha" ] || [ "$sha" = 'null' ]; then
       stop \
         'cannot confirm this branch was merged' \
         'there is no pull request for it with a merge commit, and no --sha was given.' \
+        ${gh_said:+"gh said: $gh_said"} \
         'Nothing has been deleted and nothing will be: section 9 does not allow deleting a' \
         'branch until the log has confirmed the work landed.' \
         '' \
@@ -1678,7 +1770,13 @@ main() {
   if [ "$STAGE" = 'report' ]; then
     echo ''
     plain 'Next, when you have read the above and you are satisfied:'
-    printf '  %s./scripts/finish.sh --pr --testing "<what you actually ran>"%s\n' "$BOLD" "$RESET"
+    if [ -n "$FLAGGED" ]; then
+      printf '  %s./scripts/finish.sh --pr --testing "<what you actually ran>" --acknowledge "%s"%s\n' \
+        "$BOLD" "$(printf '%s\n' "$FLAGGED" | awk '!seen[$0]++' | paste -sd, -)" "$RESET"
+      fine '--acknowledge names the flagged paths above - only the ones you have looked at'
+    else
+      printf '  %s./scripts/finish.sh --pr --testing "<what you actually ran>"%s\n' "$BOLD" "$RESET"
+    fi
     fine 'add --notes "..." if a reader would otherwise have to reconstruct something'
     fine 'add --draft to open it visible but not landable'
     echo ''
