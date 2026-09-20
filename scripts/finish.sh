@@ -1446,7 +1446,14 @@ EOF
       build_pr_body
       run gh pr edit "$PR_NUMBER" --body-file "$BODY_FILE" || stop \
         "gh pr edit failed for pull request #$PR_NUMBER"
-      good "pull request #$PR_NUMBER already open - pushed the update and refreshed its body"
+      # run() returns success under --dry-run without running anything, so this reports
+      # the push and the refresh only where they happened.
+      if [ "$DRYRUN" -eq 1 ]; then
+        fine "pull request #$PR_NUMBER is already open - not updated (dry run)"
+        fine 'a real run pushes the branch and refreshes its body'
+      else
+        good "pull request #$PR_NUMBER already open - pushed the update and refreshed its body"
+      fi
       plain "$PR_URL"
       return 0
     fi
@@ -1712,6 +1719,11 @@ confirm_landed() {
 
 SIMULATED_SWITCH=0
 
+# Every step below names what the repository holds after it, which is what the Cleanup
+# line of section 7 is assembled from. run() returns success under --dry-run without
+# running the command, so each note that sits on that success says what a real run does
+# instead of reporting a deletion that did not happen.
+
 remove_worktree_for() {
   local branch="$1" wt lock
   wt=$(worktree_for_branch "$branch")
@@ -1741,7 +1753,11 @@ remove_worktree_for() {
   fi
 
   if run git -C "$PRIMARY" worktree remove "$wt"; then
-    add_cleanup 'worktree removed'
+    if [ "$DRYRUN" -eq 1 ]; then
+      add_cleanup 'worktree would be removed'
+    else
+      add_cleanup 'worktree removed'
+    fi
     return 0
   fi
 
@@ -1791,7 +1807,12 @@ update_local_base() {
     # This is the document's `git pull --ff-only` minus the second fetch, which already
     # happened seconds ago.
     if run git -C "$PRIMARY" merge --ff-only "origin/$BASE"; then
-      add_cleanup "$BASE up to date"
+      if [ "$DRYRUN" -eq 1 ]; then
+        fine "not attempted (dry run) - whether $BASE fast-forwards is still unknown"
+        add_cleanup "$BASE would be brought up to date"
+      else
+        add_cleanup "$BASE up to date"
+      fi
     else
       fine "$BASE could not be fast-forwarded - it has drifted. Left alone deliberately"
       add_cleanup "$BASE not updated (local $BASE has drifted)"
@@ -1840,7 +1861,11 @@ delete_local_branch() {
   # landed as a new commit with a new SHA and git cannot match them up. -D is correct here
   # and only because confirm_landed already proved the work is on the base branch.
   elif run git -C "$PRIMARY" branch -D "$branch"; then
-    add_cleanup 'local branch deleted'
+    if [ "$DRYRUN" -eq 1 ]; then
+      add_cleanup 'local branch would be deleted'
+    else
+      add_cleanup 'local branch deleted'
+    fi
   # -D failed. What that means is read from the ref: it is gone when something else
   # removed it alongside this run, and present when git refused - it is checked out in a
   # worktree this run did not remove.
@@ -1885,7 +1910,11 @@ delete_remote_branch() {
   fi
 
   if run git push origin --delete "$branch"; then
-    add_cleanup 'remote branch deleted'
+    if [ "$DRYRUN" -eq 1 ]; then
+      add_cleanup 'remote branch would be deleted'
+    else
+      add_cleanup 'remote branch deleted'
+    fi
     return 0
   fi
 
@@ -2014,7 +2043,11 @@ main() {
     do_cleanup
 
     section 'Done'
-    printf 'Cleanup: %s\n\n' "$CLEANUP_NOTES"
+    printf 'Cleanup: %s\n' "$CLEANUP_NOTES"
+    if [ "$DRYRUN" -eq 1 ]; then
+      fine 'dry run complete - nothing was deleted, removed or changed'
+    fi
+    echo ''
     exit 0
   fi
 
