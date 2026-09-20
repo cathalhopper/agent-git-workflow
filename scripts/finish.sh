@@ -1294,6 +1294,13 @@ EOF
 
 # --------------------------------------------------- section 3: bring up to date
 
+# Whether a merge is in progress. Git sets MERGE_HEAD for the duration of one and removes
+# it when the merge ends, whichever way it ends, so the ref is the whole answer. Read from
+# the ref, never from git's message, which is translated.
+merge_in_progress() {
+  git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1
+}
+
 update_from_base() {
   CUR_SECTION=3
   section "Bringing the branch up to date with origin/$BASE"
@@ -1311,31 +1318,70 @@ update_from_base() {
     return 0
   fi
 
-  # Capture the conflict before aborting - afterwards there is nothing left to report.
-  local conflicted path attr who
+  # Capture the conflict before aborting - afterwards there is nothing left to report. The
+  # exit code alone does not say a merge conflicted: a hook that refuses it, histories with
+  # nothing in common, a merge driver and local changes the merge would overwrite all fail
+  # with no file conflicted. This list is what tells the two apart.
+  local conflicted path attr who abort_rc=0 recovery
   conflicted=$(git diff --name-only --diff-filter=U || true)
 
-  echo '' >&2
-  printf '%sConflicts:%s\n' "$RED" "$RESET" >&2
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    attr=$(git check-attr binary -- "$path" 2>/dev/null || true)
-    who=$(git log -1 --format='%an' "origin/$BASE" -- "$path" 2>/dev/null || true)
-    case "$attr" in
-      *": binary: set")
-        printf '  %-50s binary - these do not merge, one side wins\n' "$path" >&2 ;;
-      *)
-        printf '  %-50s other side last written by %s\n' "$path" "${who:-unknown}" >&2 ;;
-    esac
-  done <<EOF
+  if [ -n "$conflicted" ]; then
+    echo '' >&2
+    printf '%sConflicts:%s\n' "$RED" "$RESET" >&2
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      attr=$(git check-attr binary -- "$path" 2>/dev/null || true)
+      who=$(git log -1 --format='%an' "origin/$BASE" -- "$path" 2>/dev/null || true)
+      case "$attr" in
+        *": binary: set")
+          printf '  %-50s binary - these do not merge, one side wins\n' "$path" >&2 ;;
+        *)
+          printf '  %-50s other side last written by %s\n' "$path" "${who:-unknown}" >&2 ;;
+      esac
+    done <<EOF
 $conflicted
 EOF
+  fi
 
-  run git merge --abort || true
+  run git merge --abort || abort_rc=$?
+
+  # What the abort left behind is read from the repository, not assumed from having asked
+  # for it. An abort can fail - on Windows a process holding one of the files open is
+  # enough - and a branch called untouched while a merge is still in progress is a branch
+  # walked away from in that state.
+  if merge_in_progress; then
+    recovery=$(printf '%s\n' \
+      'git merge --abort did not end the merge: MERGE_HEAD is still set, so the merge is' \
+      'still in progress and the working tree holds part of it. Nothing here touches it' \
+      'further. Read what is in the tree, then end the merge yourself:' \
+      '  git status' \
+      '  git merge --abort')
+  elif [ "$abort_rc" -ne 0 ]; then
+    recovery=$(printf '%s\n' \
+      'git merge --abort failed, and no merge is in progress: what the working tree holds' \
+      'is what git left in it. Read that before anything else:' \
+      '  git status')
+  else
+    recovery='the merge has been aborted, so the branch is exactly as it was.'
+  fi
+
+  if [ -z "$conflicted" ]; then
+    stop \
+      'the merge failed without conflicting' \
+      "$recovery" \
+      '' \
+      'No file is conflicted, so there is nothing here to resolve. What refused the merge is' \
+      'in git'"'"'s own output above this stop - a hook, histories with nothing in common, a' \
+      'merge driver, or local changes the merge would overwrite. This script does not read' \
+      'that message for you: it is translated, and a guess at the cause sends you after the' \
+      'wrong one.' \
+      '' \
+      'Act on what git said, following section 3, then run this stage again'
+  fi
 
   stop \
     'the merge conflicts' \
-    'the merge has been aborted, so the branch is exactly as it was.' \
+    "$recovery" \
     '' \
     'This script does not resolve conflicts, including in files you wrote. A conflict is a' \
     'question about intent, and resolving one by picking whichever side looks more complete' \
