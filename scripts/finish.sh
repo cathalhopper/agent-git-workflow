@@ -1500,13 +1500,25 @@ build_title() {
     'it contains a double quote or a newline. Pass one with --title'
 }
 
-# Writes a "Label: value" block, wrapped, with continuations lined up under the value.
+# Writes a "Label: value" block, wrapped at 88 columns, with continuations lined up under
+# the value. The wrap is words, never characters: a word longer than the width takes a line
+# of its own rather than being cut in half, because the long words here are paths and URLs
+# and half of one is not a path. A line carries no trailing blank. The paired script wraps
+# the same text into the same lines, so the two write the same pull request body.
 field() {
   local label="$1" text="$2"
   [ -n "$text" ] || return 0
-  printf '%s\n' "$text" | fold -s -w 88 | awk -v l="$label" '
-    NR == 1 { printf "%-10s%s\n", l, $0; next }
-            { printf "%-10s%s\n", "", $0 }
+  printf '%s\n' "$text" | awk -v l="$label" -v w=88 '
+    function emit(s) { printf "%-10s%s\n", (done ? "" : l), s; done = 1 }
+    {
+      out = ""
+      for (i = 1; i <= NF; i++) {
+        if (out == "")                                  out = $i
+        else if (length(out) + 1 + length($i) <= w)     out = out " " $i
+        else                                          { emit(out); out = $i }
+      }
+      if (out != "") emit(out)
+    }
   '
 }
 
@@ -1807,10 +1819,37 @@ EOF
 
   fetch_all ' after the merge'
 
-  SQUASH_SHA=$(gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')
+  # The merge has happened by here, so this read is never allowed to end the run by itself:
+  # an abort here would take the stop's "Already done in this run" list with it, and the
+  # one thing the operator needs to know at this point is that the branch is merged. A gh
+  # that failed and a gh that answered nothing are two different causes, and each is read
+  # rather than assumed.
+  local merged gh_said rc=0
+  merged=$(gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid' 2>"$ERR_FILE") || rc=$?
+  gh_said=$(gh_error)
+  # Both stops below end the same way: the merge is done either way, and what the
+  # operator does next is the same read and the same cleanup run.
+  local tail
+  tail=$(printf '%s\n' \
+    'Nothing has been deleted, and nothing will be until the log confirms the work landed.' \
+    'Read the squashed commit off the log and finish the cleanup with it:' \
+    '' \
+    "  git log --oneline -5 origin/$BASE" \
+    "  ./scripts/finish.sh --cleanup --branch $BRANCH --sha <commit>")
+
+  if [ "$rc" -ne 0 ]; then
+    stop \
+      "gh could not read the merge commit for pull request #$PR_NUMBER" \
+      ${gh_said:+"gh said: $gh_said"} \
+      'the squash merge itself went through.' \
+      "$tail"
+  fi
+
+  SQUASH_SHA="$merged"
   [ -n "$SQUASH_SHA" ] && [ "$SQUASH_SHA" != 'null' ] || stop \
     'the pull request merged but GitHub did not report a merge commit' \
-    'nothing has been deleted. Confirm by hand before removing anything'
+    'gh answered, and the answer held no merge commit.' \
+    "$tail"
 
   confirm_landed "$SQUASH_SHA"
 }
