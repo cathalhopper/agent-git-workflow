@@ -119,6 +119,8 @@ Where an existing `CONTRIBUTING.md` or `AGENTS.md` states a rule these documents
 *.sh  text eol=lf
 *.example text eol=lf
 *.ps1 text eol=crlf
+*.yml  text eol=lf
+*.yaml text eol=lf
 
 *.png  binary
 *.jpg  binary
