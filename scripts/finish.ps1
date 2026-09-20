@@ -339,6 +339,77 @@ function Get-GhError {
     return $first
 }
 
+# Everything git wrote to stderr on that call, blank lines dropped, as the lines a stop
+# quotes under "git said:". A stop whose cause cannot be read from the repository carries
+# this instead of naming one: git's words are evidence, and they are never matched
+# against, because they are translated.
+function Get-GitSaid {
+    param([object[]]$Lines)
+    # A blank stderr line arrives as an error record holding nothing, whose ToString() is
+    # the type name rather than the line. The line itself is TargetObject, so read that
+    # where it is there, and the blank ones drop out with the empties.
+    @($Lines | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object {
+            if ($null -ne $_.TargetObject) { "$($_.TargetObject)".Trim() } else { "$_".Trim() }
+        } | Where-Object { $_ } | Select-Object -First 10)
+}
+
+# Prefixes what git said for a stop's detail lines, and is empty when git said nothing.
+function Format-GitSaid {
+    param([string[]]$Said)
+    if (-not $Said -or $Said.Count -eq 0) { return @() }
+    return @('git said:') + $Said
+}
+
+# The fetch is the one mutating command -DryRun still performs; the header says why.
+# `git fetch --all --prune` exits non-zero when ANY remote fails, so a fork whose upstream
+# no longer resolves fails it while origin fetched perfectly. Which of those happened is
+# read from the remotes themselves with a read-only `git ls-remote`, never from git's
+# message. $Phrase ends the headline, and is empty everywhere but after the merge.
+function Invoke-FetchAll {
+    param([string]$Phrase = '')
+
+    Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
+    $out = @(Invoke-Quiet { git fetch --all --prune 2>&1 })
+    if ($LASTEXITCODE -eq 0) { return }
+    $fetchSaid = Get-GitSaid $out
+
+    $originOut = @(Invoke-Quiet { git ls-remote --heads origin 2>&1 })
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Now "git fetch could not reach origin$Phrase" ((Format-GitSaid (Get-GitSaid $originOut)) + @(
+            'your view of the remote is stale, so every check that reads it would be answering',
+            'from old information. Fix the connection and re-run - do not proceed on this'))
+    }
+
+    $failed = @()
+    $said = @()
+    foreach ($name in @(git remote)) {
+        if (-not $name -or $name -eq 'origin') { continue }
+        if (-not (Test-SafeRef $name)) { continue }
+        $probe = @(Invoke-Quiet { git ls-remote --heads $name 2>&1 })
+        if ($LASTEXITCODE -ne 0) {
+            $failed += $name
+            if ($said.Count -eq 0) { $said = Get-GitSaid $probe }
+        }
+    }
+
+    if ($failed.Count -gt 0) {
+        Stop-Now ("git fetch failed on {0}, not on origin{1}" -f ($failed -join ', '), $Phrase) `
+            ((Format-GitSaid $said) + @(
+            'origin answers, so origin is not what failed. This repository has a remote that',
+            'does not resolve - a fork keeps its upstream here - and one failed remote is enough',
+            'to fail the whole fetch. Fix that remote or remove it, then re-run:',
+            '',
+            '  git remote -v',
+            '  git remote remove <name>'))
+    }
+
+    Stop-Now "git fetch --all --prune failed$Phrase" ((Format-GitSaid $fetchSaid) + @(
+        'origin answers, and so does every other remote here, so the connection is not what',
+        'failed. Act on what git said, then re-run - the refs every check below reads are the',
+        'ones this fetch could not update'))
+}
+
 # Refs and SHAs are validated before they are ever handed to git. No git subcommand or
 # flag is ever built from a variable anywhere in this file - variables only ever occupy
 # value positions, passed as discrete arguments. There is no Invoke-Expression.
@@ -412,10 +483,17 @@ $script:ResolvedDefault = ''
 $script:BaseNotes   = @()   # printed by preflight under the base line
 
 function Get-RepoContext {
-    Invoke-Quiet { git rev-parse --git-dir *> $null }
+    # Every reason git refuses to read a repository here arrives as the same exit code,
+    # and only git knows which one this is: a path outside a repository, and a checkout
+    # owned by another user, read identically from here. So git's own line is what the
+    # stop carries.
+    $rev = @(Invoke-Quiet { git rev-parse --git-dir 2>&1 })
     if ($LASTEXITCODE -ne 0) {
-        Stop-Now 'this is not a git repository' @(
-            'run the script from inside the repository you are finishing work in')
+        Stop-Now 'git will not read a repository here' ((Format-GitSaid (Get-GitSaid $rev)) + @(
+            'run the script from inside the repository you are finishing work in. Where git',
+            'names dubious ownership, the checkout belongs to another user - which a container,',
+            'a sandbox, and a network or cloud-synced path all produce - and git reads it once',
+            'the path is listed as safe, with the command it prints above'))
     }
 
     $gitDir    = (git rev-parse --path-format=absolute --git-dir)        | Select-Object -First 1
@@ -884,13 +962,7 @@ function Invoke-Preflight {
     # the base branch included, depends on remote-tracking refs being current, and the
     # document's own rule is that a check against a stale remote is worse than no check
     # because it answers with authority.
-    Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
-    Invoke-Quiet { git fetch --all --prune *> $null }
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Now 'git fetch failed' @(
-            'your view of the remote is stale, so every check below would be answering from',
-            'old information. Fix the connection and re-run - do not proceed on this')
-    }
+    Invoke-FetchAll
 
     Resolve-Base
 
@@ -1738,9 +1810,7 @@ function Merge-PullRequest {
         return
     }
 
-    Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
-    Invoke-Quiet { git fetch --all --prune *> $null }
-    if ($LASTEXITCODE -ne 0) { Stop-Now 'git fetch failed after the merge' }
+    Invoke-FetchAll ' after the merge'
 
     $script:SquashSha = (gh pr view $script:PrNumber --json mergeCommit --jq '.mergeCommit.oid') | Select-Object -First 1
     if (-not $script:SquashSha -or $script:SquashSha -eq 'null') {
@@ -1755,6 +1825,20 @@ function Merge-PullRequest {
 
 function Confirm-Landed {
     param([string]$CommitSha)
+
+    # `git merge-base --is-ancestor` exits non-zero both for "not an ancestor" and for a
+    # name that resolves to nothing, so whether the commit exists is settled first. A -Sha
+    # with a character missing otherwise reads as a merge that did not land.
+    Invoke-Quiet { git rev-parse --verify -q "$CommitSha^{commit}" *> $null }
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Now "no commit in this repository is named $CommitSha" @(
+            'nothing has been deleted, and nothing will be. A name that resolves to no commit says',
+            'nothing about whether the work landed: a truncated or mistyped -Sha reads exactly',
+            'like this, and so does a commit this repository has never held. Read the SHA off the',
+            'log and re-run:',
+            '',
+            "  git log --oneline -5 origin/$($script:BaseName)")
+    }
 
     Invoke-Quiet { git merge-base --is-ancestor $CommitSha "origin/$($script:BaseName)" *> $null }
     if ($LASTEXITCODE -ne 0) {
@@ -1878,8 +1962,19 @@ function Update-LocalBase {
                 $script:CleanupNotes += "$($script:BaseName) up to date"
             }
         } else {
-            Write-Fine "$($script:BaseName) could not be fast-forwarded - it has drifted. Left alone deliberately"
-            $script:CleanupNotes += "$($script:BaseName) not updated (local $($script:BaseName) has drifted)"
+            # Drift is a claim the history answers: local base is on origin/<base>'s
+            # history or it is not. A fast-forward that fails with it still there failed
+            # on the working tree, and git has said so in the line above this one.
+            Invoke-Quiet { git -C $script:Primary merge-base --is-ancestor HEAD "origin/$($script:BaseName)" *> $null }
+            if ($LASTEXITCODE -eq 0) {
+                Write-Fine "$($script:BaseName) could not be fast-forwarded, and it has not drifted: local $($script:BaseName) is still"
+                Write-Fine "on origin/$($script:BaseName)'s history, so the reason is in git's message above - a file the"
+                Write-Fine 'merge could not write is the usual one. Left alone deliberately'
+                $script:CleanupNotes += "$($script:BaseName) not updated (the fast-forward failed, $($script:BaseName) has not drifted)"
+            } else {
+                Write-Fine "$($script:BaseName) could not be fast-forwarded - it has drifted. Left alone deliberately"
+                $script:CleanupNotes += "$($script:BaseName) not updated (local $($script:BaseName) has drifted)"
+            }
         }
         return
     }
@@ -2100,9 +2195,7 @@ try {
         Resolve-Base
         Import-Capabilities
 
-        Write-Host '  + git fetch --all --prune' -ForegroundColor DarkGray
-        Invoke-Quiet { git fetch --all --prune *> $null }
-        if ($LASTEXITCODE -ne 0) { Stop-Now 'git fetch failed' }
+        Invoke-FetchAll
 
         # $landed, not $sha: case-insensitive names mean a local $sha would be the $Sha
         # parameter itself.

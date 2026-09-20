@@ -514,6 +514,67 @@ gh_error() {
   printf '%s' "$line"
 }
 
+# Everything git wrote to stderr on its last call, blank lines dropped. A stop whose cause
+# cannot be read from the repository quotes this instead of naming one: git's words are
+# evidence, and they are never matched against, because they are translated.
+git_said() {
+  # Trimmed, so that the indentation git puts on a command it suggests does not land on
+  # top of the stop's own. The paired script reads the same lines the same way.
+  sed 's/^[[:space:]]*//; s/[[:space:]]*$//' "$ERR_FILE" 2>/dev/null \
+    | grep -v '^$' | head -10 || true
+}
+
+# The fetch is the one mutating command --dry-run still performs; the header says why.
+# `git fetch --all --prune` exits non-zero when ANY remote fails, so a fork whose upstream
+# no longer resolves fails it while origin fetched perfectly. Which of those happened is
+# read from the remotes themselves with a read-only `git ls-remote`, never from git's
+# message. $1 is a phrase the headline ends with, empty everywhere but after the merge.
+fetch_all() {
+  local phrase="$1" fetch_said said='' failed='' name
+  printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
+  git fetch --all --prune >/dev/null 2>"$ERR_FILE" && return 0
+  fetch_said=$(git_said)
+
+  if ! git ls-remote --heads origin >/dev/null 2>"$ERR_FILE"; then
+    said=$(git_said)
+    stop \
+      "git fetch could not reach origin$phrase" \
+      ${said:+"git said:"} ${said:+"$said"} \
+      'your view of the remote is stale, so every check that reads it would be answering' \
+      'from old information. Fix the connection and re-run - do not proceed on this'
+  fi
+
+  while IFS= read -r name; do
+    [ -n "$name" ] && [ "$name" != 'origin' ] || continue
+    safe_ref "$name" || continue
+    if ! git ls-remote --heads "$name" >/dev/null 2>"$ERR_FILE"; then
+      failed="${failed}${failed:+, }$name"
+      [ -n "$said" ] || said=$(git_said)
+    fi
+  done <<EOF
+$(git remote)
+EOF
+
+  if [ -n "$failed" ]; then
+    stop \
+      "git fetch failed on $failed, not on origin$phrase" \
+      ${said:+"git said:"} ${said:+"$said"} \
+      'origin answers, so origin is not what failed. This repository has a remote that' \
+      'does not resolve - a fork keeps its upstream here - and one failed remote is enough' \
+      'to fail the whole fetch. Fix that remote or remove it, then re-run:' \
+      '' \
+      '  git remote -v' \
+      '  git remote remove <name>'
+  fi
+
+  stop \
+    "git fetch --all --prune failed$phrase" \
+    ${fetch_said:+"git said:"} ${fetch_said:+"$fetch_said"} \
+    'origin answers, and so does every other remote here, so the connection is not what' \
+    'failed. Act on what git said, then re-run - the refs every check below reads are the' \
+    'ones this fetch could not update'
+}
+
 # --------------------------------------------------------------------------- context
 
 IN_WORKTREE=0
@@ -528,9 +589,20 @@ RESOLVED_DEFAULT=''
 BASE_NOTES=''     # newline separated, printed by preflight under the base line
 
 repo_context() {
-  git rev-parse --git-dir >/dev/null 2>&1 || stop \
-    'this is not a git repository' \
-    "run the script from inside the repository you are finishing work in"
+  # Every reason git refuses to read a repository here arrives as the same exit code, and
+  # only git knows which one this is: a path outside a repository, and a checkout owned by
+  # another user, read identically from here. So git's own line is what the stop carries.
+  local said=''
+  if ! git rev-parse --git-dir >/dev/null 2>"$ERR_FILE"; then
+    said=$(git_said)
+    stop \
+      'git will not read a repository here' \
+      ${said:+"git said:"} ${said:+"$said"} \
+      'run the script from inside the repository you are finishing work in. Where git' \
+      'names dubious ownership, the checkout belongs to another user - which a container,' \
+      'a sandbox, and a network or cloud-synced path all produce - and git reads it once' \
+      'the path is listed as safe, with the command it prints above'
+  fi
 
   local gitdir commondir
   gitdir=$(git rev-parse --path-format=absolute --git-dir)
@@ -834,11 +906,7 @@ preflight() {
   # the base branch included, depends on remote-tracking refs being current, and the
   # document's own rule is that a check against a stale remote is worse than no check
   # because it answers with authority.
-  printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
-  git fetch --all --prune >/dev/null 2>&1 || stop \
-    'git fetch failed' \
-    'your view of the remote is stale, so every check below would be answering from' \
-    'old information. Fix the connection and re-run - do not proceed on this'
+  fetch_all ''
 
   resolve_base
 
@@ -1737,8 +1805,7 @@ EOF
     return 0
   fi
 
-  printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
-  git fetch --all --prune >/dev/null 2>&1 || stop 'git fetch failed after the merge'
+  fetch_all ' after the merge'
 
   SQUASH_SHA=$(gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')
   [ -n "$SQUASH_SHA" ] && [ "$SQUASH_SHA" != 'null' ] || stop \
@@ -1752,6 +1819,18 @@ EOF
 
 confirm_landed() {
   local sha="$1"
+  # `git merge-base --is-ancestor` exits non-zero both for "not an ancestor" and for a name
+  # that resolves to nothing, so whether the commit exists is settled first. A --sha with a
+  # character missing otherwise reads as a merge that did not land.
+  git rev-parse --verify -q "$sha^{commit}" >/dev/null 2>&1 || stop \
+    "no commit in this repository is named $sha" \
+    'nothing has been deleted, and nothing will be. A name that resolves to no commit says' \
+    'nothing about whether the work landed: a truncated or mistyped --sha reads exactly' \
+    'like this, and so does a commit this repository has never held. Read the SHA off the' \
+    'log and re-run:' \
+    '' \
+    "  git log --oneline -5 origin/$BASE"
+
   git merge-base --is-ancestor "$sha" "origin/$BASE" 2>/dev/null || stop \
     "the squashed commit is not on origin/$BASE" \
     "  commit  $sha" \
@@ -1859,6 +1938,14 @@ update_local_base() {
       else
         add_cleanup "$BASE up to date"
       fi
+    elif git -C "$PRIMARY" merge-base --is-ancestor HEAD "origin/$BASE" 2>/dev/null; then
+      # Drift is a claim the history answers: local $BASE is on origin/$BASE's history or
+      # it is not. A fast-forward that fails with it still there failed on the working
+      # tree, and git has said so in the line above this one.
+      fine "$BASE could not be fast-forwarded, and it has not drifted: local $BASE is still"
+      fine "on origin/$BASE's history, so the reason is in git's message above - a file the"
+      fine 'merge could not write is the usual one. Left alone deliberately'
+      add_cleanup "$BASE not updated (the fast-forward failed, $BASE has not drifted)"
     else
       fine "$BASE could not be fast-forwarded - it has drifted. Left alone deliberately"
       add_cleanup "$BASE not updated (local $BASE has drifted)"
@@ -2063,8 +2150,7 @@ main() {
     resolve_base
     load_capabilities
 
-    printf '  %s+ git fetch --all --prune%s\n' "$DIM" "$RESET"
-    git fetch --all --prune >/dev/null 2>&1 || stop 'git fetch failed'
+    fetch_all ''
 
     local sha="$SHA_ARG" gh_said=''
     if [ -z "$sha" ] && [ "$CAP_GH" -eq 1 ]; then
