@@ -1418,7 +1418,14 @@ function New-PullRequest {
             [void](Build-PrBody)
             $rc = Invoke-Mutating 'gh' @('pr', 'edit', $script:PrNumber, '--body-file', $script:BodyFile)
             if ($rc -ne 0) { Stop-Now "gh pr edit failed for pull request #$($script:PrNumber)" }
-            Write-Good "pull request #$($script:PrNumber) already open - pushed the update and refreshed its body"
+            # Invoke-Mutating returns success under -DryRun without running anything, so
+            # this reports the push and the refresh only where they happened.
+            if ($DryRun) {
+                Write-Fine "pull request #$($script:PrNumber) is already open - not updated (dry run)"
+                Write-Fine 'a real run pushes the branch and refreshes its body'
+            } else {
+                Write-Good "pull request #$($script:PrNumber) already open - pushed the update and refreshed its body"
+            }
             Write-Plain $script:PrUrl
             return
         }
@@ -1720,6 +1727,11 @@ function Confirm-Landed {
 
 $script:SimulatedSwitch = $false
 
+# Every step below names what the repository holds after it, which is what the Cleanup
+# line of section 7 is assembled from. Invoke-Mutating returns success under -DryRun
+# without running the command, so each note that sits on that success says what a real run
+# does instead of reporting a deletion that did not happen.
+
 function Remove-WorktreeFor {
     param([string]$BranchRef)
 
@@ -1756,7 +1768,11 @@ function Remove-WorktreeFor {
 
     $rc = Invoke-Mutating 'git' @('-C', $script:Primary, 'worktree', 'remove', $wt)
     if ($rc -eq 0) {
-        $script:CleanupNotes += 'worktree removed'
+        if ($DryRun) {
+            $script:CleanupNotes += 'worktree would be removed'
+        } else {
+            $script:CleanupNotes += 'worktree removed'
+        }
         return $true
     }
 
@@ -1810,7 +1826,12 @@ function Update-LocalBase {
         # which already happened seconds ago.
         $rc = Invoke-Mutating 'git' @('-C', $script:Primary, 'merge', '--ff-only', "origin/$($script:BaseName)")
         if ($rc -eq 0) {
-            $script:CleanupNotes += "$($script:BaseName) up to date"
+            if ($DryRun) {
+                Write-Fine "not attempted (dry run) - whether $($script:BaseName) fast-forwards is still unknown"
+                $script:CleanupNotes += "$($script:BaseName) would be brought up to date"
+            } else {
+                $script:CleanupNotes += "$($script:BaseName) up to date"
+            }
         } else {
             Write-Fine "$($script:BaseName) could not be fast-forwarded - it has drifted. Left alone deliberately"
             $script:CleanupNotes += "$($script:BaseName) not updated (local $($script:BaseName) has drifted)"
@@ -1860,7 +1881,13 @@ function Remove-LocalBranch {
         # the work landed as a new commit with a new SHA and git cannot match them up. -D
         # is correct here, and only because Confirm-Landed already proved the work landed.
         $rc = Invoke-Mutating 'git' @('-C', $script:Primary, 'branch', '-D', $BranchRef)
-        if ($rc -eq 0) { $script:CleanupNotes += 'local branch deleted' }
+        if ($rc -eq 0) {
+            if ($DryRun) {
+                $script:CleanupNotes += 'local branch would be deleted'
+            } else {
+                $script:CleanupNotes += 'local branch deleted'
+            }
+        }
         # -D failed. What that means is read from the ref: it is gone when something else
         # removed it alongside this run, and present when git refused - it is checked out
         # in a worktree this run did not remove.
@@ -1909,7 +1936,11 @@ function Remove-RemoteBranch {
 
     $rc = Invoke-Mutating 'git' @('push', 'origin', '--delete', $BranchRef)
     if ($rc -eq 0) {
-        $script:CleanupNotes += 'remote branch deleted'
+        if ($DryRun) {
+            $script:CleanupNotes += 'remote branch would be deleted'
+        } else {
+            $script:CleanupNotes += 'remote branch deleted'
+        }
         return
     }
 
@@ -2058,6 +2089,7 @@ try {
 
         Write-Head 'Done'
         Write-Host ("Cleanup: {0}" -f ($script:CleanupNotes -join ', '))
+        if ($DryRun) { Write-Fine 'dry run complete - nothing was deleted, removed or changed' }
         Write-Host ''
         exit 0
     }

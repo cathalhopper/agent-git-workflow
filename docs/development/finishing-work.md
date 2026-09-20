@@ -22,7 +22,7 @@ Sections 1 to 7 are the steps the script runs; run them by hand if it fails. Thr
 ./scripts/finish.sh --merge
 ```
 
-Add `-DryRun` / `--dry-run` to any stage to print the commands without running them. `-Cleanup` / `--cleanup` is the recovery path if a merge landed but cleanup did not: it confirms the squashed commit is on the base, then deletes the remote branch, the worktree and the local branch. A file the bare run flagged that the branch means to include is acknowledged on the `--pr` run with `--acknowledge <path,...>` (`-Acknowledge` in PowerShell); it accepts only paths that run flagged, and writes what you acknowledged into the pull-request body where a reviewer sees it. A project stop that needs a human assertion is answered with `--declare <name,...>` (`-Declare`), per §2 check 5.
+Add `-DryRun` / `--dry-run` to any stage to print the commands without running them; every line it prints says what a real run does, and none of it reports an action as taken. `-Cleanup` / `--cleanup` is the recovery path if a merge landed but cleanup did not: it confirms the squashed commit is on the base, then deletes the remote branch, the worktree and the local branch. A file the bare run flagged that the branch means to include is acknowledged on the `--pr` run with `--acknowledge <path,...>` (`-Acknowledge` in PowerShell); it accepts only paths that run flagged, and writes what you acknowledged into the pull-request body where a reviewer sees it. A project stop that needs a human assertion is answered with `--declare <name,...>` (`-Declare`), per §2 check 5.
 
 **Every stop names the section of this document that explains it**, and says whether this run already changed anything — `Nothing was changed`, or the commands under `Already done in this run`, which are not undone.
 
@@ -273,6 +273,8 @@ Cleanup: remote branch deleted, local branch deleted, main up to date
 Plain ASCII arrows and hyphens: `scripts/finish.*` prints this block verbatim, and PowerShell 5.1's console encoding makes non-ASCII output unreliable. The `Cleanup` line is assembled from what happened, so a skipped step says so — `main not updated (primary checkout is on chore/other)`.
 
 Each note names what the repository holds after the step, not what the step set out to do. A branch the remote retires before the delete reaches it reads as `remote branch already gone`, a branch deleted by hand before a `--cleanup` run reads as `local branch already gone`, and a step whose outcome the script cannot read names the read it is missing — `remote branch not deleted (origin unreadable)`.
+
+Under `--dry-run` each note names what a real run does instead — `remote branch would be deleted`, `worktree would be removed`, `main would be brought up to date`, `local branch would be deleted`. A step the dry run reads the answer to keeps its note either way: a branch already off the remote reads as `remote branch already gone` in both.
 
 ---
 
