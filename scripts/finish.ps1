@@ -1271,6 +1271,14 @@ function Test-Acknowledgements {
 
 # --------------------------------------------------- section 3: bring up to date
 
+# Whether a merge is in progress. Git sets MERGE_HEAD for the duration of one and removes
+# it when the merge ends, whichever way it ends, so the ref is the whole answer. Read from
+# the ref, never from git's message, which is translated.
+function Test-MergeInProgress {
+    Invoke-Quiet { git rev-parse -q --verify MERGE_HEAD *> $null }
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Update-FromBase {
     $script:CurSection = 3
     Write-Head "Bringing the branch up to date with origin/$($script:BaseName)"
@@ -1289,32 +1297,69 @@ function Update-FromBase {
         return
     }
 
-    # Capture the conflict before aborting - afterwards there is nothing left to report.
-    $conflicted = @(git diff --name-only --diff-filter=U)
+    # Capture the conflict before aborting - afterwards there is nothing left to report. The
+    # exit code alone does not say a merge conflicted: a hook that refuses it, histories with
+    # nothing in common, a merge driver and local changes the merge would overwrite all fail
+    # with no file conflicted. This list is what tells the two apart.
+    $conflicted = @(git diff --name-only --diff-filter=U | Where-Object { $_ })
 
-    Write-Host ''
-    Write-Host 'Conflicts:' -ForegroundColor Red
-    foreach ($path in $conflicted) {
-        if (-not $path) { continue }
-        if (Test-BinaryAttr $path) {
-            Write-Host ("  {0,-50} binary - these do not merge, one side wins" -f $path)
-        } else {
-            $who = (git log -1 --format=%an "origin/$($script:BaseName)" -- $path) | Select-Object -First 1
-            if (-not $who) { $who = 'unknown' }
-            Write-Host ("  {0,-50} other side last written by {1}" -f $path, $who)
+    if ($conflicted.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Conflicts:' -ForegroundColor Red
+        foreach ($path in $conflicted) {
+            if (Test-BinaryAttr $path) {
+                Write-Host ("  {0,-50} binary - these do not merge, one side wins" -f $path)
+            } else {
+                $who = (git log -1 --format=%an "origin/$($script:BaseName)" -- $path) | Select-Object -First 1
+                if (-not $who) { $who = 'unknown' }
+                Write-Host ("  {0,-50} other side last written by {1}" -f $path, $who)
+            }
         }
     }
 
-    [void](Invoke-Mutating 'git' @('merge', '--abort'))
+    $abortRc = Invoke-Mutating 'git' @('merge', '--abort')
 
-    Stop-Now 'the merge conflicts' @(
-        'the merge has been aborted, so the branch is exactly as it was.',
+    # What the abort left behind is read from the repository, not assumed from having asked
+    # for it. An abort can fail - on Windows a process holding one of the files open is
+    # enough - and a branch called untouched while a merge is still in progress is a branch
+    # walked away from in that state.
+    if (Test-MergeInProgress) {
+        $recovery = @(
+            'git merge --abort did not end the merge: MERGE_HEAD is still set, so the merge is',
+            'still in progress and the working tree holds part of it. Nothing here touches it',
+            'further. Read what is in the tree, then end the merge yourself:',
+            '  git status',
+            '  git merge --abort')
+    }
+    elseif ($abortRc -ne 0) {
+        $recovery = @(
+            'git merge --abort failed, and no merge is in progress: what the working tree holds',
+            'is what git left in it. Read that before anything else:',
+            '  git status')
+    }
+    else {
+        $recovery = @('the merge has been aborted, so the branch is exactly as it was.')
+    }
+
+    if ($conflicted.Count -eq 0) {
+        Stop-Now 'the merge failed without conflicting' ($recovery + @(
+            '',
+            'No file is conflicted, so there is nothing here to resolve. What refused the merge is',
+            "in git's own output above this stop - a hook, histories with nothing in common, a",
+            'merge driver, or local changes the merge would overwrite. This script does not read',
+            'that message for you: it is translated, and a guess at the cause sends you after the',
+            'wrong one.',
+            '',
+            'Act on what git said, following section 3, then run this stage again'))
+    }
+
+    Stop-Now 'the merge conflicts' ($recovery + @(
         '',
         'This script does not resolve conflicts, including in files you wrote. A conflict is a',
         'question about intent, and resolving one by picking whichever side looks more complete',
         'is how half a feature disappears without a single error message.',
         '',
-        'Resolve it yourself following section 3, or talk to whoever wrote the other side')
+        'Resolve it yourself following section 3, or talk to whoever wrote the other side'))
 }
 
 # ------------------------------------------------------ section 4: open the pull request

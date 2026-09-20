@@ -140,7 +140,7 @@ Never rebase, and never force-push: a rebase needs a force-push, which can destr
 
 ### If there are conflicts
 
-`git merge --abort` is always available and always safe. Use it the moment you are unsure.
+`git merge --abort` is the answer the moment you are unsure, and it is the one recovery this step needs. Confirm it landed before you act on it: `git rev-parse -q --verify MERGE_HEAD` prints a SHA while a merge is in progress and nothing once one ends. An abort that fails — on Windows a process holding one of the files open is enough — leaves the merge in progress and the working tree part way through it.
 
 | Situation | What happens |
 |---|---|
@@ -151,6 +151,8 @@ Never rebase, and never force-push: a rebase needs a force-push, which can destr
 | Conflicts in a binary, generated, scene or asset file | **Stop.** These do not merge. One side wins and that is a human decision |
 
 Never resolve a conflict by picking whichever side looks more complete, and never with `git checkout --ours`/`--theirs` or by taking one side of a file whole. After resolving, read `git diff origin/main...HEAD` and confirm every line the other side added is in the result.
+
+**What `scripts/finish.*` does here.** A merge that exits non-zero is not by itself a conflict: a hook that refuses the merge, histories with nothing in common, a merge driver and local changes the merge would overwrite all fail with no file conflicted. The script reads `git diff --name-only --diff-filter=U` and says which it has. Where files conflict it names each one and who wrote the other side; where none do it leaves git's own output as the evidence and names no cause. It then aborts, reads `MERGE_HEAD`, and says the branch is unchanged only where the abort succeeded and no merge is in progress. It stops either way, and it attempts the abort once. §8 has the rows for a merge that fails without conflicting and for an abort that does not restore the branch.
 
 ---
 
@@ -308,6 +310,9 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 | `checks none configured on this repository - nothing was verified` (a finding, not a stop) | The checkout carries no `.github/workflows` tree | Expected on a repository without CI. On one that has CI, it means the workflow is missing: stop and report it |
 | `you are on <base>` | The checkout is on a base branch, not on a claimed branch | Claim the work per [`starting-new-work.md`](starting-new-work.md) §4, or §6 there if you already committed to the base |
 | `the first commit on this branch is not a claim commit` | The first commit off the base does not start `claim:`, or the base resolved wrongly | Check the resolved base on the `base` line. If it is right and the branch predates the workflow, pass `--scope "<what it does>"` on every stage |
+| `the merge failed without conflicting` | `git merge origin/<base>` exited non-zero and no file is conflicted: a hook that refused the merge, histories with nothing in common, a merge driver, or local changes the merge would overwrite | Read git's own output above the stop, act on what it names, then run `--pr` again |
+| `git merge --abort did not end the merge` (at §3) | `MERGE_HEAD` is set after the abort, so the merge is in progress and the working tree holds part of it | Read `git status` on the branch, then end the merge yourself: `git merge --abort`. The script attempts it once and goes no further |
+| `git merge --abort failed, and no merge is in progress` (at §3) | The abort exited non-zero and `MERGE_HEAD` is unset, so what the working tree holds is what git left in it | Read `git status` and decide what those changes are before running anything else |
 | `gh pr create failed` | `gh` refused after the branch was pushed | Read gh's message above the stop. The branch is pushed, as `Already done in this run` lists; fix the cause and re-run `--pr` |
 | `there is no pull request for this branch` | `--merge` ran before `--pr` opened one | Run `--pr` first |
 | `gh could not read the pull request for this branch` | `gh` failed for a reason it names, such as `origin` not being a GitHub host | Act on what gh said. Where no GitHub route exists, land the branch through the remote's own review and run `--cleanup --sha <commit>` |
