@@ -1,0 +1,5 @@
+# Claude Code's per-machine working directory: local settings, and the agent
+# worktrees created under .claude/worktrees/. None of it is shared state, and a
+# worktree there is a second checkout of this repository - committing one would
+# nest a working copy inside the history a project copying this template gets.
+.claude/
