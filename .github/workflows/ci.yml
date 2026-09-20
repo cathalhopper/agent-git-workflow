@@ -1,0 +1,24 @@
+name: ci
+
+# Every pull request and every push to main. There is deliberately no `paths:` filter:
+# scripts/finish.* reads "this repository has workflows but the pull request has no check
+# runs" as broken CI and refuses to merge on it, and a filtered workflow produces exactly
+# that on any pull request that touches nothing it matches.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # ubuntu-latest carries pwsh, so the PowerShell half of every script pair is
+      # parsed here even when the change was written on a machine without it.
+      - run: bash .github/check.sh
