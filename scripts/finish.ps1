@@ -1824,41 +1824,113 @@ function Update-LocalBase {
     $script:CleanupNotes += "$($script:BaseName) not updated (primary checkout is on $x)"
 }
 
+# What origin says about a branch: present, gone, or unknown. `git ls-remote` prints
+# nothing to stdout both when the branch is absent and when the read itself fails, so the
+# exit code is what separates them: an empty answer from a failed read is not a retired
+# claim. Read-only, so -DryRun does not gate it.
+function Get-RemoteBranchState {
+    param([string]$Name)
+    $lines = @(Invoke-Quiet { git ls-remote --heads origin $Name 2>$null })
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { return 'unknown' }
+    if (@($lines | Where-Object { "$_".Trim() }).Count -gt 0) { return 'present' }
+    return 'gone'
+}
+
+# Whether the local branch exists: present or gone. Read from the ref, never from git's
+# message, which is translated.
+function Get-LocalBranchState {
+    param([string]$Name)
+    Invoke-Quiet { git -C $script:Primary show-ref --verify --quiet "refs/heads/$Name" *> $null }
+    if ($LASTEXITCODE -eq 0) { return 'present' }
+    return 'gone'
+}
+
 function Remove-LocalBranch {
     param([string]$BranchRef)
-    # After a squash merge `git branch -d` refuses with "not fully merged", because the
-    # work landed as a new commit with a new SHA and git cannot match them up. -D is
-    # correct here, and only because Confirm-Landed already proved the work landed.
-    $rc = Invoke-Mutating 'git' @('-C', $script:Primary, 'branch', '-D', $BranchRef)
-    if ($rc -eq 0) { $script:CleanupNotes += 'local branch deleted' }
-    else { Write-Fine "local branch $BranchRef was not deleted"; $script:CleanupNotes += 'local branch not deleted' }
+    # Read the ref first, as Remove-RemoteBranch reads origin first. On the -Cleanup
+    # recovery path the branch may already be gone, and -D at a ref that is not there
+    # fails with "branch not found" - a failure for a step that needs nothing done to it.
+    if ((Get-LocalBranchState $BranchRef) -eq 'gone') {
+        Write-Fine "local branch $BranchRef already gone"
+        $script:CleanupNotes += 'local branch already gone'
+    }
+    else {
+        # After a squash merge `git branch -d` refuses with "not fully merged", because
+        # the work landed as a new commit with a new SHA and git cannot match them up. -D
+        # is correct here, and only because Confirm-Landed already proved the work landed.
+        $rc = Invoke-Mutating 'git' @('-C', $script:Primary, 'branch', '-D', $BranchRef)
+        if ($rc -eq 0) { $script:CleanupNotes += 'local branch deleted' }
+        # -D failed. What that means is read from the ref: it is gone when something else
+        # removed it alongside this run, and present when git refused - it is checked out
+        # in a worktree this run did not remove.
+        elseif ((Get-LocalBranchState $BranchRef) -eq 'gone') {
+            Write-Fine "local branch $BranchRef already gone"
+            $script:CleanupNotes += 'local branch already gone'
+        }
+        else {
+            Write-Fine "local branch $BranchRef was not deleted"
+            $script:CleanupNotes += 'local branch not deleted'
+        }
+    }
 
     [void](Invoke-Mutating 'git' @('-C', $script:Primary, 'worktree', 'prune'))
 }
 
 # The remote branch is the claim that starting-new-work.md section 2 reads, so deleting it
 # is what retires the claim. Only ever called after Confirm-Landed.
+#
+# Origin is read before anything is said about it, and read again after a delete that
+# failed, so that every note below is what origin answers rather than what this run
+# expected. The capability gate is second for the same reason: it says what this session
+# can do, and a branch GitHub has already retired needs nothing done to it.
 function Remove-RemoteBranch {
     param([string]$BranchRef)
-    if ($script:CapRemoteBranchDel -eq 0) {
-        Write-Fine 'remote branch left - this session cannot delete it (see env-capabilities)'
-        $script:CleanupNotes += 'remote branch left (no route to delete it here)'
-        return
-    }
-    # Ask before deleting. With "Automatically delete head branches" enabled on the
-    # repository GitHub has already retired the branch by the time the merge returns, and
-    # firing a delete at a ref that is not there prints a failure for a step that succeeded.
-    $stillThere = @(Invoke-Quiet { git ls-remote --heads origin $BranchRef 2>$null })
-    if ($stillThere.Count -eq 0) {
+    $state = Get-RemoteBranchState $BranchRef
+
+    if ($state -eq 'gone') {
         Write-Fine 'remote branch already gone'
         $script:CleanupNotes += 'remote branch already gone'
         return
     }
+
+    if ($script:CapRemoteBranchDel -eq 0) {
+        if ($state -eq 'unknown') {
+            Write-Fine 'remote branch not deleted - this session cannot delete it (see env-capabilities),'
+            Write-Fine 'and origin could not be read to say whether it is still there. Read it yourself:'
+            Write-Fine "  git ls-remote --heads origin $BranchRef"
+            $script:CleanupNotes += 'remote branch not deleted (no route to delete it here, origin unreadable)'
+            return
+        }
+        Write-Fine 'remote branch left - this session cannot delete it (see env-capabilities)'
+        $script:CleanupNotes += 'remote branch left (no route to delete it here)'
+        return
+    }
+
     $rc = Invoke-Mutating 'git' @('push', 'origin', '--delete', $BranchRef)
-    if ($rc -eq 0) { $script:CleanupNotes += 'remote branch deleted' }
-    else {
-        Write-Fine "remote branch $BranchRef could not be deleted - it still reads as a claim"
-        $script:CleanupNotes += 'remote branch NOT deleted'
+    if ($rc -eq 0) {
+        $script:CleanupNotes += 'remote branch deleted'
+        return
+    }
+
+    # With "Automatically delete head branches" enabled on the repository GitHub retires
+    # the branch itself, and it can do so between the read above and this push - which
+    # then fails at a ref that is already gone.
+    switch (Get-RemoteBranchState $BranchRef) {
+        'gone' {
+            Write-Fine 'remote branch already gone - the delete found nothing left to delete'
+            $script:CleanupNotes += 'remote branch already gone'
+        }
+        'present' {
+            Write-Fine "remote branch $BranchRef could not be deleted - it still reads as a claim"
+            $script:CleanupNotes += 'remote branch NOT deleted'
+        }
+        default {
+            Write-Fine "remote branch $BranchRef could not be deleted, and origin could not be read to say"
+            Write-Fine 'whether it is still there. Read it before reporting the claim retired:'
+            Write-Fine "  git ls-remote --heads origin $BranchRef"
+            $script:CleanupNotes += 'remote branch not deleted (origin unreadable)'
+        }
     }
 }
 

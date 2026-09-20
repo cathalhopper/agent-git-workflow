@@ -272,6 +272,8 @@ Cleanup: remote branch deleted, local branch deleted, main up to date
 
 Plain ASCII arrows and hyphens: `scripts/finish.*` prints this block verbatim, and PowerShell 5.1's console encoding makes non-ASCII output unreliable. The `Cleanup` line is assembled from what happened, so a skipped step says so — `main not updated (primary checkout is on chore/other)`.
 
+Each note names what the repository holds after the step, not what the step set out to do. A branch the remote retires before the delete reaches it reads as `remote branch already gone`, a branch deleted by hand before a `--cleanup` run reads as `local branch already gone`, and a step whose outcome the script cannot read names the read it is missing — `remote branch not deleted (origin unreadable)`.
+
 ---
 
 ## 8. When it has already gone wrong
@@ -314,6 +316,9 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 | `worktree not removed - it is locked` (after the merge) | Another tool owns that worktree's lifecycle, such as an agent session | Leave it through that tool. Otherwise `git worktree unlock <path>` from the primary checkout first. The script does not unlock it for you |
 | `worktree could not be removed` (after the merge) | The worktree holds modified or untracked files, and git will not delete them | Look at what is in it. Commit or remove it, then `git worktree remove <path>` from the primary checkout |
 | `worktree emptied, but its directory is still there` (after the merge) | Git removed the checkout and deregistered the worktree, then could not delete the directory, because a process is sitting in it | Leave that directory in every shell that is in it, look at what the directory still holds, then delete it with `rmdir <path>`. `git worktree remove` no longer applies: it is not a worktree |
+| `remote branch <branch> could not be deleted - it still reads as a claim` (after the merge) | The delete ran, and `origin` lists the branch after it | Delete it from a session that reaches `origin`: `git push origin --delete <branch>`. Until it is gone, [`starting-new-work.md`](starting-new-work.md) §2 reads it as an active claim |
+| `origin could not be read to say whether it is still there` (after the merge) | `git ls-remote` failed: no route to the host, an expired credential, or an error from GitHub | Read it yourself: `git ls-remote --heads origin <branch>`, and delete the branch if it is there |
+| `local branch <branch> was not deleted` (after the merge) | The ref is still there after `git branch -D`, which refuses a branch checked out in a worktree this run left in place | Act on the worktree row above, then `git branch -D <branch>` from the primary checkout |
 
 ---
 

@@ -1805,13 +1805,48 @@ update_local_base() {
   add_cleanup "$BASE not updated (primary checkout is on $x)"
 }
 
+# What origin says about a branch: present, gone, or unknown. `git ls-remote` prints
+# nothing to stdout both when the branch is absent and when the read itself fails, so the
+# exit code is what separates them: an empty answer from a failed read is not a retired
+# claim. Read-only, so --dry-run does not gate it.
+remote_branch_state() {
+  local out rc=0
+  out=$(git ls-remote --heads origin "$1" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then printf 'unknown'
+  elif [ -n "$out" ]; then printf 'present'
+  else printf 'gone'
+  fi
+}
+
+# Whether the local branch exists: present or gone. Read from the ref, never from git's
+# message, which is translated.
+local_branch_state() {
+  if git -C "$PRIMARY" show-ref --verify --quiet "refs/heads/$1"; then
+    printf 'present'
+  else
+    printf 'gone'
+  fi
+}
+
 delete_local_branch() {
   local branch="$1"
+  # Read the ref first, as delete_remote_branch reads origin first. On the --cleanup
+  # recovery path the branch may already be gone, and -D at a ref that is not there fails
+  # with "branch not found" - a failure for a step that needs nothing done to it.
+  if [ "$(local_branch_state "$branch")" = 'gone' ]; then
+    fine "local branch $branch already gone"
+    add_cleanup 'local branch already gone'
   # After a squash merge `git branch -d` refuses with "not fully merged", because the work
   # landed as a new commit with a new SHA and git cannot match them up. -D is correct here
   # and only because confirm_landed already proved the work is on the base branch.
-  if run git -C "$PRIMARY" branch -D "$branch"; then
+  elif run git -C "$PRIMARY" branch -D "$branch"; then
     add_cleanup 'local branch deleted'
+  # -D failed. What that means is read from the ref: it is gone when something else
+  # removed it alongside this run, and present when git refused - it is checked out in a
+  # worktree this run did not remove.
+  elif [ "$(local_branch_state "$branch")" = 'gone' ]; then
+    fine "local branch $branch already gone"
+    add_cleanup 'local branch already gone'
   else
     fine "local branch $branch was not deleted"
     add_cleanup 'local branch not deleted'
@@ -1821,27 +1856,58 @@ delete_local_branch() {
 
 # The remote branch is the claim that starting-new-work.md section 2 reads, so deleting
 # it is what retires the claim. Only ever called after confirm_landed.
+#
+# Origin is read before anything is said about it, and read again after a delete that
+# failed, so that every note below is what origin answers rather than what this run
+# expected. The capability gate is second for the same reason: it says what this session
+# can do, and a branch GitHub has already retired needs nothing done to it.
 delete_remote_branch() {
-  local branch="$1"
-  if [ "$CAP_REMOTE_BRANCH_DEL" -eq 0 ]; then
-    fine 'remote branch left - this session cannot delete it (see env-capabilities)'
-    add_cleanup 'remote branch left (no route to delete it here)'
-    return 0
-  fi
-  # Ask before deleting. With "Automatically delete head branches" enabled on the
-  # repository GitHub has already retired the branch by the time the merge returns, and
-  # firing a delete at a ref that is not there prints a failure for a step that succeeded.
-  if [ -z "$(git ls-remote --heads origin "$branch" 2>/dev/null)" ]; then
+  local branch="$1" state
+  state=$(remote_branch_state "$branch")
+
+  if [ "$state" = 'gone' ]; then
     fine 'remote branch already gone'
     add_cleanup 'remote branch already gone'
     return 0
   fi
+
+  if [ "$CAP_REMOTE_BRANCH_DEL" -eq 0 ]; then
+    if [ "$state" = 'unknown' ]; then
+      fine 'remote branch not deleted - this session cannot delete it (see env-capabilities),'
+      fine 'and origin could not be read to say whether it is still there. Read it yourself:'
+      fine "  git ls-remote --heads origin $branch"
+      add_cleanup 'remote branch not deleted (no route to delete it here, origin unreadable)'
+      return 0
+    fi
+    fine 'remote branch left - this session cannot delete it (see env-capabilities)'
+    add_cleanup 'remote branch left (no route to delete it here)'
+    return 0
+  fi
+
   if run git push origin --delete "$branch"; then
     add_cleanup 'remote branch deleted'
-  else
-    fine "remote branch $branch could not be deleted - it still reads as a claim"
-    add_cleanup 'remote branch NOT deleted'
+    return 0
   fi
+
+  # With "Automatically delete head branches" enabled on the repository GitHub retires the
+  # branch itself, and it can do so between the read above and this push - which then
+  # fails at a ref that is already gone.
+  case "$(remote_branch_state "$branch")" in
+    gone)
+      fine 'remote branch already gone - the delete found nothing left to delete'
+      add_cleanup 'remote branch already gone'
+      ;;
+    present)
+      fine "remote branch $branch could not be deleted - it still reads as a claim"
+      add_cleanup 'remote branch NOT deleted'
+      ;;
+    *)
+      fine "remote branch $branch could not be deleted, and origin could not be read to say"
+      fine 'whether it is still there. Read it before reporting the claim retired:'
+      fine "  git ls-remote --heads origin $branch"
+      add_cleanup 'remote branch not deleted (origin unreadable)'
+      ;;
+  esac
 }
 
 do_cleanup() {
