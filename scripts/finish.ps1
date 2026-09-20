@@ -52,9 +52,11 @@
       git worktree prune
       git branch -D <branch>
 
-    The words --force, --force-with-lease, rebase, reset --hard and stash appear nowhere
-    in this file outside this help block. That makes the audit a one-line grep:
+    No command this script runs forces, rebases, resets or stashes. The words themselves
+    appear further down, in comments and in the messages that refuse those actions, so
+    the audit is a Select-String and a read of each hit:
       Select-String -Path scripts/finish.ps1 -Pattern '--force|rebase|reset --hard|stash'
+    Every hit outside this help block is a comment or a refusal message, never a command.
 
     WHY THERE IS NO -Force, -SkipChecks OR -Yes, AND WHY YOU MUST NOT ADD ONE
     Permission systems match on command prefixes. The moment "finish.ps1 -Merge" is

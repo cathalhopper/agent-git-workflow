@@ -58,9 +58,11 @@
 #     git worktree prune
 #     git branch -D <branch>
 #
-#   The words --force, --force-with-lease, rebase, reset --hard and stash appear nowhere in
-#   this file outside this comment. That makes the audit a one-line grep:
+#   No command this script runs forces, rebases, resets or stashes. The words themselves
+#   appear further down, in comments and in the messages that refuse those actions, so the
+#   audit is a grep and a read of each hit:
 #     grep -n -- '--force\|force-with-lease\|rebase\|reset --hard\|stash' scripts/finish.sh
+#   Every hit outside this block is a comment or a refusal message, never a command.
 #
 # WHY THERE IS NO --force, --skip-checks OR --yes, AND WHY YOU MUST NOT ADD ONE
 #   Permission systems match on command prefixes. The moment "finish.sh --merge" is approved,
