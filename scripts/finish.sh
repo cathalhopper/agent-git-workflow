@@ -1726,13 +1726,33 @@ remove_worktree_for() {
     return 0
   fi
 
-  # Never --force. On a partially removed tree that is exactly how the mess gets worse.
-  printf '  %sworktree could not be removed%s\n' "$YELLOW" "$RESET"
+  # Which failure this was is read from what is on disk, never from git's message, which
+  # is translated. Do not test it with `git status` in the worktree either: once the .git
+  # file is gone, a worktree inside the repository reports the primary checkout's status.
+  [ -e "$wt" ] || { add_cleanup 'worktree removed'; return 0; }
+
+  # Its .git file is still there, so the checkout is intact and still registered.
+  if [ -e "$wt/.git" ]; then
+    # Never --force. On a partially removed tree that is exactly how the mess gets worse.
+    printf '  %sworktree could not be removed%s\n' "$YELLOW" "$RESET"
+    plain "  $wt"
+    plain '  git refuses when a worktree has modified or untracked files in it. Look, then:'
+    plain "    git -C \"$PRIMARY\" worktree remove \"$wt\""
+    plain '  do not add --force without looking - it deletes whatever is in there'
+    add_cleanup 'worktree not removed'
+    return 1
+  fi
+
+  # No .git file: git emptied the checkout and deregistered it, then could not delete the
+  # directory itself. A process holding a directory open is what does that on Windows.
+  printf '  %sworktree emptied, but its directory is still there%s\n' "$YELLOW" "$RESET"
   plain "  $wt"
-  plain '  git refuses when a worktree has modified or untracked files in it. Look, then:'
-  plain "    git -C \"$PRIMARY\" worktree remove \"$wt\""
-  plain '  do not add --force without looking - it deletes whatever is in there'
-  add_cleanup 'worktree not removed'
+  plain '  the checkout is gone and git no longer lists it. What is left is a directory that'
+  plain '  something held open - on Windows, any process sitting in it, including the shell'
+  plain '  this ran from. Leave that directory, look at what is in it, then delete it:'
+  plain "    rmdir \"$wt\""
+  plain '  git worktree remove does not apply to it any more: it is not a worktree'
+  add_cleanup 'worktree emptied, directory left behind'
   return 1
 }
 
