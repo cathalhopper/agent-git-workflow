@@ -50,6 +50,11 @@ strip_fences() {
   awk '/^```/ { f = !f; next } !f' "$1"
 }
 
+# grep -q exits at the first match, which sends SIGPIPE to whatever is still writing to
+# it. Under `set -o pipefail` that makes the pipeline fail, and a section that is present
+# reads as missing - intermittently, since it is a race between the two processes. The
+# text is gathered first and matched from a here-string: never `producer | grep -q`.
+
 # True when $1 (a document path) has the section $2, which is either N or N.M.
 # Sections are "## N. Title"; subsections are "### N.M Title", with no dot after the M.
 has_section() {
@@ -61,7 +66,7 @@ has_section() {
     *.*) pattern="^### ${num//./\\.} " ;;
     *)   pattern="^## ${num}\. " ;;
   esac
-  strip_fences "$doc" | grep -qE "$pattern"
+  grep -qE "$pattern" <<<"$(strip_fences "$doc")"
 }
 
 # The body of section $2 of document $1, up to the next top-level section.
@@ -75,7 +80,7 @@ section_body() {
 
 # True when section $2 of document $1 holds the numbered check $3, written "**M. ...".
 has_check() {
-  section_body "$1" "$2" | grep -qE "^\*\*${3}\. "
+  grep -qE "^\*\*${3}\. " <<<"$(section_body "$1" "$2")"
 }
 
 # A script's executable content: the PowerShell <# #> help block removed, then quoted
