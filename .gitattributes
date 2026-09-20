@@ -10,3 +10,8 @@
 
 # PowerShell is CRLF-native on the platform it runs on.
 *.ps1 text eol=crlf
+
+# Workflow files sit beside the shell scripts they run. Actions reads either ending, and a
+# CRLF working copy is a whole-file diff against a contributor on another platform.
+*.yml  text eol=lf
+*.yaml text eol=lf
