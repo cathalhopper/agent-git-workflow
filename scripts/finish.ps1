@@ -329,11 +329,16 @@ function Get-GhOutput {
 
 # The first line gh wrote to stderr, unless it only said there is no pull request - which
 # the caller reports in its own words. Anything else is the real reason, such as origin not
-# being a GitHub host, and hiding it would make the stop lie.
+# being a GitHub host, and hiding it would make the stop lie. A blank stderr line arrives
+# as an error record holding nothing, whose ToString() is the type name rather than the
+# line, so the line itself is read from TargetObject and the blank ones drop out with the
+# empties - as they do in Get-GitSaid, and as they do in the bash twin, which greps them
+# out before taking the first.
 function Get-GhError {
     param([object[]]$Lines)
     $first = @($Lines | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
-        ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -First 1
+        ForEach-Object { if ($null -ne $_.TargetObject) { "$($_.TargetObject)".Trim() } else { "$_".Trim() } } |
+        Where-Object { $_ }) | Select-Object -First 1
     if (-not $first) { return '' }
     if ($first -match 'no pull requests found|no open pull requests') { return '' }
     return $first
@@ -447,25 +452,33 @@ function Remove-BodyFiles {
     }
 }
 
-# Writes a "Label: value" block, wrapped, with continuations lined up under the value.
+# Writes a "Label: value" block, wrapped at 88 columns, with continuations lined up under
+# the value. The wrap is words, never characters: a word longer than the width takes a line
+# of its own rather than being cut in half, because the long words here are paths and URLs
+# and half of one is not a path. A line carries no trailing blank. The bash twin wraps the
+# same text into the same lines, so the two write the same pull request body.
 function Format-Field {
     param([string]$Label, [string]$Text, [int]$Width = 88)
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
 
-    $lines = @()
-    $current = ''
-    foreach ($word in ($Text -split '\s+')) {
-        if ($word -eq '') { continue }
-        if ($current -eq '') { $current = $word }
-        elseif (($current.Length + 1 + $word.Length) -le $Width) { $current = "$current $word" }
-        else { $lines += $current; $current = $word }
-    }
-    if ($current -ne '') { $lines += $current }
-
     $out = @()
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $label = if ($i -eq 0) { $Label } else { '' }
-        $out += ('{0,-10}{1}' -f $label, $lines[$i])
+    # Each line of the value wraps on its own, so a value that arrives with newlines in it
+    # keeps them. The bash twin reads a line at a time for the same reason.
+    foreach ($para in ($Text -split "`n")) {
+        $lines = @()
+        $current = ''
+        foreach ($word in ($para -split '\s+')) {
+            if ($word -eq '') { continue }
+            if ($current -eq '') { $current = $word }
+            elseif (($current.Length + 1 + $word.Length) -le $Width) { $current = "$current $word" }
+            else { $lines += $current; $current = $word }
+        }
+        if ($current -ne '') { $lines += $current }
+
+        foreach ($line in $lines) {
+            $label = if ($out.Count -eq 0) { $Label } else { '' }
+            $out += ('{0,-10}{1}' -f $label, $line)
+        }
     }
     return $out
 }
@@ -1812,10 +1825,33 @@ function Merge-PullRequest {
 
     Invoke-FetchAll ' after the merge'
 
-    $script:SquashSha = (gh pr view $script:PrNumber --json mergeCommit --jq '.mergeCommit.oid') | Select-Object -First 1
+    # The merge has happened by here, so a gh that failed and a gh that answered nothing
+    # are two different causes, and each is read rather than assumed. The bash twin reads
+    # the same two.
+    $out = @(Invoke-Quiet { gh pr view $script:PrNumber --json mergeCommit --jq '.mergeCommit.oid' 2>&1 })
+    $rc = $LASTEXITCODE
+    $merged = Get-GhOutput $out | Select-Object -First 1
+    # Both stops below end the same way: the merge is done either way, and what the
+    # operator does next is the same read and the same cleanup run.
+    $tail = @(
+        'Nothing has been deleted, and nothing will be until the log confirms the work landed.',
+        'Read the squashed commit off the log and finish the cleanup with it:',
+        '',
+        "  git log --oneline -5 origin/$($script:BaseName)",
+        "  .\scripts\finish.ps1 -Cleanup -Branch $($script:BranchName) -Sha <commit>")
+
+    if ($rc -ne 0) {
+        $ghSaid = Get-GhError $out
+        $why = @()
+        if ($ghSaid) { $why += "gh said: $ghSaid" }
+        Stop-Now "gh could not read the merge commit for pull request #$($script:PrNumber)" (
+            $why + @('the squash merge itself went through.') + $tail)
+    }
+
+    $script:SquashSha = $merged
     if (-not $script:SquashSha -or $script:SquashSha -eq 'null') {
-        Stop-Now 'the pull request merged but GitHub did not report a merge commit' @(
-            'nothing has been deleted. Confirm by hand before removing anything')
+        Stop-Now 'the pull request merged but GitHub did not report a merge commit' (
+            @('gh answered, and the answer held no merge commit.') + $tail)
     }
 
     Confirm-Landed $script:SquashSha
