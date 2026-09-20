@@ -970,7 +970,28 @@ function Invoke-Preflight {
     # request's author to enforce "never merge a pull request you did not open", and a
     # fabricated login would defeat that check rather than degrade it.
     if ($script:CapGh -eq 1) {
-        $script:GhLogin = (gh api user --jq .login) | Select-Object -First 1
+        # Judged by exit code and by what came back: Windows PowerShell 5.1 does not apply
+        # $ErrorActionPreference to a native command, so a failed `gh api user` would
+        # otherwise leave this empty and let the run continue.
+        $userOut = @(Invoke-Quiet { gh api user --jq .login 2>&1 })
+        $userRc  = $LASTEXITCODE
+        $script:GhLogin = Get-GhOutput $userOut | Select-Object -First 1
+        if ($userRc -ne 0 -or -not $script:GhLogin) {
+            $ghSaid = Get-GhError $userOut
+            $said = @()
+            if ($ghSaid) { $said = @("gh said: $ghSaid") }
+            Stop-Now 'gh could not read your GitHub login' ($said + @(
+                'it is the gh session that failed here, not your identity: the token may be missing',
+                'the read:user scope, an SSO authorisation may have lapsed, or GitHub may have',
+                'answered with an error. Check the session, and log in again if it asks you to:',
+                '',
+                '  gh auth status',
+                '  gh auth login',
+                '',
+                'docs/development/setting-up.md section 3.3 has the prompts and the answers. The',
+                "merge stage compares this login against the pull request's author to enforce",
+                '"never merge a pull request you did not open", so it is never guessed'))
+        }
     }
 
     Write-Fine ("branch        {0}" -f $script:BranchName)

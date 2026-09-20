@@ -931,7 +931,26 @@ preflight() {
   # request's author to enforce "never merge a pull request you did not open", and a
   # fabricated login would defeat that check rather than degrade it.
   if [ "$CAP_GH" -eq 1 ]; then
-    GH_LOGIN=$(gh api user --jq .login)
+    local gh_said
+    # Judged by exit code and by what came back, so that a gh which fails quietly is
+    # caught with the one that says why.
+    GH_LOGIN=$(gh api user --jq .login 2>"$ERR_FILE") || GH_LOGIN=''
+    if [ -z "$GH_LOGIN" ]; then
+      gh_said=$(gh_error)
+      stop \
+        'gh could not read your GitHub login' \
+        ${gh_said:+"gh said: $gh_said"} \
+        'it is the gh session that failed here, not your identity: the token may be missing' \
+        'the read:user scope, an SSO authorisation may have lapsed, or GitHub may have' \
+        'answered with an error. Check the session, and log in again if it asks you to:' \
+        '' \
+        '  gh auth status' \
+        '  gh auth login' \
+        '' \
+        'docs/development/setting-up.md section 3.3 has the prompts and the answers. The' \
+        "merge stage compares this login against the pull request's author to enforce" \
+        '"never merge a pull request you did not open", so it is never guessed'
+    fi
   fi
 
   fine "branch        $BRANCH"
