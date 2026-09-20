@@ -1,6 +1,6 @@
 # agent-git-workflow
 
-A git workflow for repositories where several people work at once, most of them driving a coding agent. It stops two people building the same thing, and it stops finished work being destroyed on the way to `main`.
+A git workflow for repositories where work happens in parallel: several people at once, most of them driving a coding agent, or one person running several agentic loops. It stops two of them building the same thing, and it stops finished work being destroyed on the way to `main`. For one person working alone it is more than the situation needs, and it still pays for itself the first time the script refuses a command that would have lost work.
 
 It is two procedures, written so a person or an agent can follow them exactly, and a script that performs the second one and refuses at every point where the next command would do damage.
 
