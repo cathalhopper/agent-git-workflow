@@ -254,7 +254,7 @@ git worktree remove <path-to-worktree>
 git branch -D feat/api-rate-limiting
 ```
 
-A worktree cannot remove itself, and git will not delete the branch you have checked out.
+A worktree cannot remove itself, and git will not delete the branch you have checked out. Leave it in the shell you are typing in, not only in the script: a directory any process is sitting in does not delete on Windows, and git empties the worktree and deregisters it before it finds that out. What survives is a directory, and §8 has the row for it.
 
 Local `main` catches up the next time anyone runs the block at the top of this section from the primary checkout.
 
@@ -311,6 +311,8 @@ Almost everything in git is recoverable, provided you stop before doing the seco
 | `this branch was cut from origin/<a>, but resolves to origin/<b>` | The branch carries commits of one long-lived branch that its resolved base lacks: a hotfix cut from `develop`, or a feature cut from `main` | If it belongs on `<a>`, re-run with `--base <a>`. If it belongs on `<b>`, it was cut from the wrong branch: report it and wait |
 | `note  ALT_BASES lists <branch>, which origin/<default> contains` (a note, not a stop) | `ALT_BASES` names a branch the default merges from, so no branch can be told apart by it | Move it to `BASE_BY_PREFIX` in `scripts/workflow.conf` |
 | `worktree not removed - it is locked` (after the merge) | Another tool owns that worktree's lifecycle, such as an agent session | Leave it through that tool. Otherwise `git worktree unlock <path>` from the primary checkout first. The script does not unlock it for you |
+| `worktree could not be removed` (after the merge) | The worktree holds modified or untracked files, and git will not delete them | Look at what is in it. Commit or remove it, then `git worktree remove <path>` from the primary checkout |
+| `worktree emptied, but its directory is still there` (after the merge) | Git removed the checkout and deregistered the worktree, then could not delete the directory, because a process is sitting in it | Leave that directory in every shell that is in it, look at what the directory still holds, then delete it with `rmdir <path>`. `git worktree remove` no longer applies: it is not a worktree |
 
 ---
 

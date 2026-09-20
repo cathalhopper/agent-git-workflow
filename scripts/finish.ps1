@@ -1739,13 +1739,36 @@ function Remove-WorktreeFor {
         return $true
     }
 
-    # Never --force. On a partially removed tree that is exactly how the mess gets worse.
-    Write-Action 'worktree could not be removed'
+    # Which failure this was is read from what is on disk, never from git's message, which
+    # is translated. Do not test it with `git status` in the worktree either: once the .git
+    # file is gone, a worktree inside the repository reports the primary checkout's status.
+    if (-not (Test-Path -LiteralPath $wt)) {
+        $script:CleanupNotes += 'worktree removed'
+        return $true
+    }
+
+    # Its .git file is still there, so the checkout is intact and still registered.
+    if (Test-Path -LiteralPath (Join-Path $wt '.git')) {
+        # Never --force. On a partially removed tree that is exactly how the mess gets worse.
+        Write-Action 'worktree could not be removed'
+        Write-Plain "  $wt"
+        Write-Plain '  git refuses when a worktree has modified or untracked files in it. Look, then:'
+        Write-Plain "    git -C `"$($script:Primary)`" worktree remove `"$wt`""
+        Write-Plain '  do not add --force without looking - it deletes whatever is in there'
+        $script:CleanupNotes += 'worktree not removed'
+        return $false
+    }
+
+    # No .git file: git emptied the checkout and deregistered it, then could not delete the
+    # directory itself. A process holding a directory open is what does that on Windows.
+    Write-Action 'worktree emptied, but its directory is still there'
     Write-Plain "  $wt"
-    Write-Plain '  git refuses when a worktree has modified or untracked files in it. Look, then:'
-    Write-Plain "    git -C `"$($script:Primary)`" worktree remove `"$wt`""
-    Write-Plain '  do not add --force without looking - it deletes whatever is in there'
-    $script:CleanupNotes += 'worktree not removed'
+    Write-Plain '  the checkout is gone and git no longer lists it. What is left is a directory that'
+    Write-Plain '  something held open - on Windows, any process sitting in it, including the shell'
+    Write-Plain '  this ran from. Leave that directory, look at what is in it, then delete it:'
+    Write-Plain "    Remove-Item -LiteralPath `"$wt`""
+    Write-Plain '  git worktree remove does not apply to it any more: it is not a worktree'
+    $script:CleanupNotes += 'worktree emptied, directory left behind'
     return $false
 }
 
