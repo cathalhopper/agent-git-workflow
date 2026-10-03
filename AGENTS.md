@@ -1,6 +1,16 @@
 # agent-git-workflow
 
+**This file governs changes to this repository only.** If you were asked to install this workflow into another repository, nothing below applies: follow `ADOPTING.md`, and the file you copy is `templates/AGENTS.md`.
+
 This repository is a template other projects copy. Everything under `docs/development/`, `scripts/` and `templates/` lands in someone else's repository unedited, so none of it may name this repository or any one project. Project-specific material lives only under `examples/`.
+
+## Before changing any file in this repository
+
+**Follow `docs/development/starting-new-work.md` as written**: check for overlap, then claim the work with a named branch and a claim commit before the first edit.
+
+## Before landing any change
+
+**Follow `docs/development/finishing-work.md` as written, and run it with `scripts/finish.sh` or `scripts/finish.ps1`.** If the script stops, report the stop and wait. Never perform the same operation by hand.
 
 ## Before changing a document
 
@@ -16,11 +26,4 @@ This repository is a template other projects copy. Everything under `docs/develo
 
 ## Before committing
 
-Run both parsers, and the grep that proves nothing project-specific leaked:
-
-```bash
-bash -n scripts/finish.sh scripts/setup.sh scripts/env-capabilities.sh examples/tsunami-defence/finish-project.sh
-grep -rniE 'tsunami|golden|crates/|spike/a0' docs scripts templates
-```
-
-The grep returns nothing.
+This repository's check command is `bash .github/check.sh`. Run it wherever `finishing-work.md` says to run `CHECK_COMMAND` or `scripts/check.sh`. It runs both parsers, the grep that proves nothing project-specific leaked, and every other invariant this repository states, and its summary names each step.

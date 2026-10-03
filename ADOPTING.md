@@ -6,6 +6,8 @@ Every step is something you do once. Nothing here edits the shipped scripts or p
 
 ## 0. Ask before copying anything
 
+An agent adopting this runs from the root of the adopting repository, never from a clone of this one, and reads this clone only as the source it copies from.
+
 The workflow needs a GitHub `origin` and `gh`. Without `gh`, only the bare run of `scripts/finish.*` works.
 
 An agent adopting this asks the user each question below and waits for the answers. On a new repository most answers are "none yet", and the default stands.
